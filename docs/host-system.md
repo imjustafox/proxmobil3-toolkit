@@ -171,7 +171,65 @@ So the trust path into the device is: dongle EEPROM `[TestMode]` → `90-testmod
 runs it → root shell / SSH, persisting because the installed key survives on
 `/init`. No bootloader password or secure-boot gate is in the way on this unit.
 
-## 5. Cross-references
+## 5. The nx application (`NxProx`)
+
+`NxProx` is not a purpose-built validator — it's INIT's **general transit
+on-board-computer platform**, configured here as a PROXmobil fare validator for
+operator **ABM1**. The binary is stripped, so this is from its `/mnt/nx/src/…`
+source-path strings and its config files. The subsystems (by module count):
+
+- **Ticketing / fare engine** — `ticketing/vdvka` (German VDV-KA, the largest),
+  `ticketing/prox`, `ticketing/itso`, `ticketing/barcode`, `ticketing/data`,
+  `ticketing/control`, `ticketing/driveraccounting`, plus `appl/asn1c` (an ASN.1
+  codec for the transit data structures).
+- **AVL / telematics** — `avl/*` (INIT `M128`/`M134`/`M152`/`N150`–`N154`
+  telegrams, GPS/distance-time triggers, tech logon) and `j1708/*` (the SAE
+  **J1708/J1587 vehicle bus**, with Trapeze and Avail ITS integrations). So the
+  same app normally runs a bus's AVL/CAD computer; here most of that is dormant.
+- **Comms (`base/com`)** — the host side **mirrors the reader's IPP command set**:
+  `NxIppFeig`, `NxIppDesfire`, `NxIppFeigEmv`, `NxIppFeigItso`, `NxIppGirogo`,
+  `NxIppMifareClassic`, `NxIppUltralightC`, `NxIppUnhandledCardTele`,
+  `NxIppPic32Tele` (the PIC32), `NxIppIso7816Tele`, `NxIppCvendLogReceiver`, plus
+  `NxIppJsonRpc`. Also `at/` (AT commands), `din66019/` (German transit serial),
+  `isi/` (INIT Service Interface), `remoteconfig/` (remote config client/server),
+  `slipencoding/`, and `httponboarddata/` (onboard data over HTTP).
+- **GUI** — `gui/component`, `gui/control`, `gui/dialog`, driven by `gui.xml` /
+  `gui.ini` (drawn to the framebuffer; no touch — see `INTERFACE.md`).
+- **Device drivers** — `device/prox` (the cVEND reader), `device/barcodescanner`,
+  `device/audio`, and `spic/pic32mx795` — confirming the power/watchdog MCU is a
+  **PIC32MX795**.
+- **Framework** — `base/{data,sys,control,net,crypto,io,util}`, with
+  `base/control/expression/*` an embedded **C-like expression/scripting engine**.
+
+### The operational script (`opscript.nxs`)
+
+`opscript.nxs` is the fare/validation logic, written in nx's scripting language
+and run by the expression engine. It defines the result codes (`NXPROX_ERROR_*`:
+AUTH_FAILED, TICKET_EXPIRED, NO_TICKET, `CI_ALREADY_DONE` = check-in already done,
+VALID_FUTURE…), the `DCC_*` **Device Control Commands** pushed from the back office
+(`REBOOT`, `DISABLE_SERVICE`/`ENABLE_SERVICE`, `USE_STANDARD_FARES`/
+`USE_SPECIAL_FARES`), buzzer day/night modes, and the Bytemark account-based error
+set (`BMTK_ACC_ERR_DESFIRE_SELECT_APPLICATION_FAIL`, `…_CARD_AUTHENTICATION_FAIL`,
+`…_CARD_READ_FAIL`). So the tap-decision policy lives in this editable script, not
+hard-compiled.
+
+### Config and in-service gating
+
+A large `.ini` set under `/init/efad/pgm/` configures it: `env.ini`
+(`[Environment]`: operator `BetriebsKennung=ABM1`, `Waehrung=USD`, sales channel,
+payment type, and the commented `FahrzeugNr`/`GeraeteNr`), plus `gui.ini`/`gui.xml`,
+`prox.ini`, `pay.ini`, `proto.ini`, `sto.ini`, `nixe.ini`, `NvValues.ini`,
+`vendor.ini`, `rc5.tab`/`rc6.tab`, and the operator kernel plugin
+`libnxk_ABM1.so`/`nxk_ABM1.dll`. nx refuses to go **in service** until it has a
+vehicle address (`Fahrzeugadresse` — see `docs/reversing-nx.md`), which on a
+bus comes from the AVL/J1708 side; on our bench unit that, plus the card keys from
+`proxy_server`, is what the key-server/in-service work supplies.
+
+End to end: a tap goes reader → `NxIppFeig` → `opscript.nxs` policy → the local
+ABT backend (`proxy_server`, §3) → accept/deny → GUI + buzzer, with the result and
+any offline transaction recorded.
+
+## 6. Cross-references
 
 - Hardware, peripherals (PIC32, barcode, audio, framebuffer, networking, the
   dongle EEPROM): `INTERFACE.md`.
