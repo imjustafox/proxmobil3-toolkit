@@ -1,0 +1,19 @@
+# Device storage dumps: contain CapMetro production secrets (OAuth client secret,
+# access token, DESFire card keys) and multi-GB SD images. NEVER commit.
+dumps/
+
+# Compiled / generated artifacts (rebuild from source)
+sniffer/*.so
+keyserver/keyserve
+os-build/*.gz
+__pycache__/
+*.pyc
+
+# Raw capture logs (working artifacts; findings are distilled in the docs)
+*.log
+
+# Personal: real authorized SSH key (use authorized_keys.example as a template)
+usb/authorized_keys
+
+# OS noise
+.DS_Store

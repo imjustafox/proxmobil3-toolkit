@@ -1,0 +1,3 @@
+# Put your SSH public key here (one line, e.g. the contents of ~/.ssh/id_rsa.pub),
+# then copy this file to authorized_keys next to autorun.sh on the USB stick.
+ssh-ed25519 AAAA...your-key-here... you@example.com

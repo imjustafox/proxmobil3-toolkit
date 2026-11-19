@@ -1,0 +1,398 @@
+#!/usr/bin/env python3
+"""Host-side tool for a PROXmobil3 (PM3).
+
+Talks INIT's "IPP" framing to the PIC32 power/watchdog controller
+(/dev/ttymxc2) and the FEIG cVEND NFC reader (/dev/ttymxc3) by bridging the
+serial port over SSH, so nothing needs installing on the device.
+
+Protocol notes come from https://wiki.pm3.dev/pic32 and /cvend.
+
+Frame:  BC seq replyTo msgType lenHi lenLo hdrCRC8 data... [crc32 LE]
+        hdrCRC8 = CRC-8/MAXIM over the first 6 bytes
+        crc32 (standard CRC-32, little-endian) only when msgType >= 0x80
+"""
+import argparse
+import binascii
+import os
+import struct
+import subprocess
+import sys
+import threading
+import time
+import queue
+
+HOST = os.environ.get("PM3_HOST", "10.0.1.102")
+PIC32_TTY = "/dev/ttymxc2"
+CVEND_TTY = "/dev/ttymxc3"
+
+
+def crc8_maxim(data: bytes) -> int:
+    crc = 0
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = (crc >> 1) ^ 0x8C if crc & 1 else crc >> 1
+    return crc
+
+
+def crc32_jam(data: bytes) -> int:
+    # cVEND uses CRC-32/JAMCRC (bit-inverted standard CRC-32), little-endian.
+    return (~binascii.crc32(data)) & 0xFFFFFFFF
+
+
+def encode(msg_type: int, data: bytes = b"", seq: int = 1, reply_to: int = 0) -> bytes:
+    hdr = bytes([0xBC, seq & 0xFF, reply_to & 0xFF, msg_type & 0xFF]) + struct.pack(">H", len(data))
+    out = hdr + bytes([crc8_maxim(hdr)]) + data
+    if msg_type >= 0x80:
+        out += struct.pack("<I", crc32_jam(data))
+    return out
+
+
+class Decoder:
+    """Incremental frame parser; resyncs on 0xBC with a valid header CRC."""
+
+    def __init__(self):
+        self.buf = bytearray()
+
+    def feed(self, chunk: bytes):
+        self.buf += chunk
+        frames = []
+        while True:
+            i = self.buf.find(0xBC)
+            if i < 0:
+                self.buf.clear()
+                break
+            del self.buf[:i]
+            if len(self.buf) < 7:
+                break
+            if crc8_maxim(self.buf[:6]) != self.buf[6]:
+                del self.buf[0]
+                continue
+            seq, reply_to, mtype = self.buf[1], self.buf[2], self.buf[3]
+            n = struct.unpack(">H", self.buf[4:6])[0]
+            total = 7 + n + (4 if mtype >= 0x80 else 0)
+            if len(self.buf) < total:
+                break
+            data = bytes(self.buf[7:7 + n])
+            ok = True
+            if mtype >= 0x80:
+                got = struct.unpack("<I", self.buf[7 + n:total])[0]
+                # Accept either JAMCRC (cVEND) or standard CRC-32 (PIC32 doc).
+                ok = got in (crc32_jam(data), binascii.crc32(data) & 0xFFFFFFFF)
+            frames.append({"seq": seq, "replyTo": reply_to, "type": mtype, "data": data, "crc_ok": ok})
+            del self.buf[:total]
+        return frames
+
+
+class SshSerial:
+    """Bidirectional raw pipe to a device tty over ssh.
+
+    Holding the tty while nx is running will fight with nx; stop it first
+    (`pm3.py nx-stop`).
+    """
+
+    def __init__(self, tty: str, host: str = HOST):
+        cmd = (f"stty -F {tty} 115200 cs8 -cstopb -parenb raw -echo -ixon && "
+               f"(cat {tty} & CATPID=$!; cat > {tty}; kill $CATPID)")
+        self.p = subprocess.Popen(["ssh", "-T", "-o", "BatchMode=yes", f"root@{host}", cmd],
+                                  stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
+        self.q = queue.Queue()
+        self.dec = Decoder()
+        threading.Thread(target=self._reader, daemon=True).start()
+        self.seq = 0
+
+    def _reader(self):
+        while True:
+            chunk = os.read(self.p.stdout.fileno(), 4096)
+            if not chunk:
+                self.q.put(None)
+                return
+            for f in self.dec.feed(chunk):
+                self.q.put(f)
+
+    def send(self, msg_type: int, data: bytes = b"", reply_to: int = 0) -> int:
+        self.seq = (self.seq % 255) + 1
+        self.p.stdin.write(encode(msg_type, data, self.seq, reply_to))
+        self.p.stdin.flush()
+        return self.seq
+
+    def recv(self, timeout=2.0):
+        try:
+            return self.q.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def request(self, msg_type: int, data: bytes = b"", timeout=2.0):
+        seq = self.send(msg_type, data)
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            f = self.recv(deadline - time.time())
+            if f and f["replyTo"] == seq:
+                return f
+        return None
+
+    def close(self):
+        try:
+            self.p.stdin.close()
+        finally:
+            self.p.terminate()
+
+
+def fmt(f):
+    return f"seq={f['seq']:02x} replyTo={f['replyTo']:02x} type={f['type']:02x} data={f['data'].hex()}" + \
+        ("" if f["crc_ok"] else " CRC-BAD")
+
+
+def ssh(cmd: str):
+    return subprocess.run(["ssh", "-o", "BatchMode=yes", f"root@{HOST}", cmd]).returncode
+
+
+# --- PIC32 -----------------------------------------------------------------
+
+PIC_KEYS = {
+    0x0100: ("u8", "internal power button"), 0x03FB: ("u8", "ignition"),
+    0x4000: ("u16", "watchdog residual s"), 0x4003: ("u16", "watchdog timeout s"),
+    0x4004: ("u16", "boot watchdog timeout s"), 0x500B: ("u16", "ambient light"),
+    0x5040: ("u16", "input voltage mV"),
+    0x5041: ("u16", "rail ~3V3 mV"), 0x5042: ("u16", "rail ~24V mV"),
+    0x5043: ("u16", "rail ~24V mV"), 0x5044: ("u16", "rail ~23V mV"),
+    0x504f: ("u16", "rail 3V3 mV"), 0x5050: ("u16", "rail 5V mV"),
+    0xc0c0: ("str", "timer stats"),
+    0x8100: ("u32", "PwrOnTime"), 0x8102: ("u32", "PwrOnCnt"), 0x8103: ("u32", "StartCnt"),
+    0x810A: ("u32", "ShutdownCnt"), 0x8110: ("u32", "WdCnt"),
+    0xC000: ("str", "pic32 version"), 0xC001: ("str", "bootloader version"),
+}
+
+
+def decode_value(kind, raw: bytes):
+    # ValueReadReply = key16 echo + value (big-endian). Strings carry a u16
+    # length then NUL-separated fields. Verified on hardware.
+    val = raw[2:]
+    if kind == "?" and raw[:1] in (b"\xc0", b"\xd0"):  # c0xx/d0xx are strings
+        kind = "str"
+    if kind == "str":
+        return " | ".join(p.decode(errors="replace").strip() for p in val[2:].split(b"\0") if p)
+    return int.from_bytes(val, "big")
+
+
+def cmd_pic_read(args):
+    s = SshSerial(PIC32_TTY)
+    keys = [int(k, 16) for k in args.keys] or list(PIC_KEYS)
+    for k in keys:
+        r = s.request(0x02, struct.pack(">H", k))
+        kind, name = PIC_KEYS.get(k, ("u16", "?"))
+        if r is None:
+            print(f"{k:04x} {name:28s} (no reply)")
+        else:
+            print(f"{k:04x} {name:28s} raw={r['data'].hex():20s} ~ {decode_value(kind, r['data'])}")
+    s.close()
+
+
+def cmd_watchdog(args):
+    s = SshSerial(PIC32_TTY)
+    r = s.request(0x04, struct.pack(">HH", 0x4003, args.seconds))
+    print(fmt(r) if r else "no reply (the write may still have landed)")
+    s.close()
+
+
+def cmd_pic_raw(args):
+    s = SshSerial(PIC32_TTY)
+    r = s.request(int(args.type, 16), bytes.fromhex(args.data))
+    print(fmt(r) if r else "no reply")
+    s.close()
+
+
+# --- cVEND -----------------------------------------------------------------
+
+CARD_FUNCS = {"vdvka": 4, "mifare": 5, "iso": 6, "desfire": 7,
+              "girogo": 8, "itso": 9, "ultralightc": 10}
+
+
+def cmd_cvend_version(args):
+    s = SshSerial(CVEND_TTY)
+    r = s.request(0x02)
+    print(fmt(r) if r else "no reply")
+    if r:
+        print(r["data"].decode(errors="replace"))
+    s.close()
+
+
+def cmd_beep(args):
+    s = SshSerial(CVEND_TTY)
+    # Buzzer: >HH = (frequency Hz, duration ms), big-endian. Verified on hardware;
+    # ~2700 Hz is loudest (piezo resonance), volume is not adjustable.
+    s.send(0x22, struct.pack(">HH", args.freq, args.ms))
+    time.sleep(args.ms / 1000 + 0.2)
+    s.close()
+
+
+def _find_uid(d: bytes):
+    """Find a 7-byte ISO14443A UID (NXP cards start with 0x04) in a payload."""
+    for i in range(len(d) - 6):
+        if d[i] == 0x04:
+            return ":".join(f"{b:02X}" for b in d[i:i + 7])
+    return None
+
+
+def decode_event(f):
+    """Human-readable gloss for reader->host frames seen in practice."""
+    t, d = f["type"], f["data"]
+    if t == 0xED:  # log message: [level byte][ascii]
+        return "LOG: " + d[1:].decode(errors="replace").strip()
+    if t == 0xD5 and f["replyTo"] == 0:  # unsolicited card event
+        # [subtype][status][7-byte UID]. subtype 0x00 = entered, 0x01 = left.
+        if d[:1] == b"\x00":
+            return "CARD IN  uid=" + ":".join(f"{b:02X}" for b in d[2:9])
+        if d[:1] == b"\x01":
+            return "CARD OUT"
+    if t == 0xBE:  # UnhandledCard: UID present even for non-enabled card types
+        uid = _find_uid(d)
+        return "UNHANDLED card uid=" + uid if uid else "UNHANDLED card " + d.hex()
+    if t in (0xB1, 0xB9):  # 14443A / DESFire card read (UID at offset 2)
+        uid = _find_uid(d)
+        return ("14443A" if t == 0xB1 else "DESFire") + " card uid=" + (uid or d.hex())
+    if t in (0xB3, 0xBB):
+        return ("14443A" if t == 0xB3 else "DESFire") + " card removed"
+    if t == 0xD1:  # structured card record (TLV with 'dffee0NN' tags)
+        tags = {}
+        i = 0
+        while i + 3 < len(d):
+            if d[i:i+3] == b"\xdf\xfe\xe0":
+                tag = d[i+3]; ln = d[i+4]; val = d[i+5:i+5+ln]
+                tags[f"{tag:02x}"] = val.hex(); i += 5 + ln
+            else:
+                i += 1
+        return "CARD RECORD " + " ".join(f"{k}={v}" for k, v in tags.items())
+    return None
+
+
+def cvend_enable(s, names, retries=8):
+    """Replicate nx's real reader-enable handshake (reverse-engineered by
+    LD_PRELOAD-sniffing nx) and retry until the reader actually acks an enable.
+
+    The reader only accepts enables in the right state; the leading 0xEA primes
+    it, but it can take several attempts (it ignores commands while busy/asleep).
+    Returns True once an 0xE4 is acked (0xE5 … 0000)."""
+    ids = [CARD_FUNCS[n] for n in names]
+    for attempt in range(1, retries + 1):
+        s.request(0xEA, bytes.fromhex("0100"), timeout=1.2)  # prime/wake
+        s.request(0x02, timeout=1.2)                         # version
+        for cid in ids:
+            s.request(0xE4, bytes([0x00, cid, 0x01, 0x01]), timeout=1.2)
+        s.request(0xAA, bytes.fromhex("6afec201"), timeout=1.2)   # 0xAA = SetTime (timestamp)
+        # The cert read returning the device cert (0xE9, ~1KB) is the real
+        # CONNECTED->INITIALIZED trigger that turns on polling.
+        r = s.request(0xE8, bytes.fromhex("04fe0a0000"), timeout=2.0)
+        if r and r["type"] == 0xE9 and len(r["data"]) > 100:
+            print(f"reader INITIALIZED (cert read ok, attempt {attempt})")
+            return True
+        print(f"arm attempt {attempt}: no cert yet, retrying ...")
+        for _ in range(3):
+            s.send(0x04); time.sleep(0.3)   # nudge awake between tries
+    print("reader never returned cert (continuing; polling may be off)")
+    return False
+
+
+def cvend_wait_startup(s, timeout=75):
+    """Wait for the reader's 0x0F Startup frame (its power-on completion)."""
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        f = s.recv(2.0)
+        if f and f["type"] == 0x0F:
+            return True
+    return False
+
+
+def cmd_cvend_watch(args):
+    """Enable card functions and print every frame the reader sends."""
+    s = SshSerial(CVEND_TTY)
+    if args.reset or args.wait_startup:
+        print("resetting reader (0x10) and waiting for 0x0F startup ...")
+        s.send(0x10)  # reader reset -> reboots -> emits 0x0F Startup -> polls
+        print("startup seen" if cvend_wait_startup(s) else "no startup (continuing)")
+    cvend_enable(s, args.enable)
+    print("--- tap a card ---")
+    last_status = 0
+    try:
+        while True:
+            if time.time() - last_status > 5:  # keep the reader awake
+                s.send(0x04)
+                last_status = time.time()
+            f = s.recv(1.0)
+            if f is None:
+                if s.p.poll() is not None:
+                    break
+                continue
+            if f["type"] in (0x05, 0x07) and not args.verbose:
+                continue
+            g = decode_event(f)
+            print(fmt(f) + (f"\n    -> {g}" if g else ""))
+    except KeyboardInterrupt:
+        pass
+    s.close()
+
+
+# --- system ----------------------------------------------------------------
+
+def cmd_nx_stop(args):
+    # Order matters: stop nx, then kill the watchdog before it powers us off.
+    # NxExe is in PATH (/usr/bin); disable the watchdog via IPP as a fallback so
+    # this never leaves the unit counting down to poweroff.
+    rc = ssh("systemctl stop nx; systemctl stop init-abtproxy; NxExe watchdog 0 2>/dev/null")
+    s = SshSerial(PIC32_TTY)
+    s.request(0x04, struct.pack(">HH", 0x4003, 0))  # ValueWrite watchdog timeout = 0
+    s.close()
+    sys.exit(rc)
+
+
+def cmd_nx_start(args):
+    sys.exit(ssh("systemctl start init-abtproxy; systemctl start nx"))
+
+
+def cmd_info(args):
+    sys.exit(ssh("uname -a; uptime; cat /etc/os-release 2>/dev/null; free; df -h; "
+                 "systemctl is-active nx init-abtproxy; ls /dev/ttymxc* /dev/ttyUSB* /dev/fb* 2>/dev/null"))
+
+
+def main():
+    global HOST
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--host", default=HOST)
+    sp = ap.add_subparsers(dest="cmd", required=True)
+
+    sp.add_parser("info").set_defaults(fn=cmd_info)
+    sp.add_parser("nx-stop", help="stop stock UI + disable watchdog").set_defaults(fn=cmd_nx_stop)
+    sp.add_parser("nx-start").set_defaults(fn=cmd_nx_start)
+
+    p = sp.add_parser("pic-read", help="read PIC32 keys (hex); default: known keys")
+    p.add_argument("keys", nargs="*")
+    p.set_defaults(fn=cmd_pic_read)
+    p = sp.add_parser("watchdog", help="set PIC32 watchdog timeout (0 = off)")
+    p.add_argument("seconds", type=int)
+    p.set_defaults(fn=cmd_watchdog)
+    p = sp.add_parser("pic-raw", help="send raw IPP frame to PIC32")
+    p.add_argument("type")
+    p.add_argument("data", nargs="?", default="")
+    p.set_defaults(fn=cmd_pic_raw)
+
+    sp.add_parser("cvend-version").set_defaults(fn=cmd_cvend_version)
+    p = sp.add_parser("beep")
+    p.add_argument("--freq", type=int, default=2000)
+    p.add_argument("--ms", type=int, default=200)
+    p.set_defaults(fn=cmd_beep)
+    p = sp.add_parser("cvend-watch", help="enable card types and dump reader events")
+    p.add_argument("--enable", nargs="*", default=list(CARD_FUNCS), choices=list(CARD_FUNCS))
+    p.add_argument("-v", "--verbose", action="store_true")
+    p.add_argument("--wait-startup", action="store_true",
+                   help="wait for the reader's 0x0F boot frame before enabling (use right after power-on)")
+    p.add_argument("--reset", action="store_true",
+                   help="reset the reader (0x10) and wait for its 0x0F startup, then enable (reliable cold arm)")
+    p.set_defaults(fn=cmd_cvend_watch)
+
+    args = ap.parse_args()
+    HOST = args.host
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()
