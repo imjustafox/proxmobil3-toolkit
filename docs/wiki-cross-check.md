@@ -48,14 +48,17 @@ corrected, or newly pinned down:
 | `0xEA` (wiki: unknown) | handler **fails** (`IPP handler for cmd 0xea failed [Ipp.cpp:262]`); reply is `0xEB` (wiki omits `0xEB`) |
 | `0xED` Log levels 1/2/3 | confirmed (INFO/WARN/ERROR) |
 | `0xBE` UnhandledCard / `0xD5` CARD IN | confirmed (UID carriers) |
+| `0xBC` DESFireCommand (wiki: "sends DESFire command") | **works on a real DESFire card** — `0xBC [native cmd]` → `0xBD [00][status][data]`; the reader runs the command and its `0xAF` multi-frame chaining internally. GetVersion (`0x60`) returned HW/SW version + 7-byte UID + batch/date; GetApplicationIDs (`0x6A`) returned the card's AID. Pre-auth metadata only (we hold no keys) |
+| `0xB4` APDUProx | reply shape confirmed — `0xB5 [devsel][echo][status][SW1][SW2][data]`, status `0x70` = no card (matches wiki) — but `DeviceSelect 0x00` never routes to the contactless card (even with ISO handler enabled); correct DeviceSelect **unknown** |
 
 Reader identity established via the file ops: **FEIG cVEND Development Kit,
 Buildroot 2014.05, firmware 02.35** — see `INTERFACE.md` "Reader internals". Deep
 research mapping public FEIG/NXP/EMVCo docs to our RE is in
-`reports/FEIG cVEND reader research.md`. Still untested / needs hardware: the
-DESFire/APDU card paths (`0xB1`/`0xB9`/`0xBC`/`0xB4`/`0xB6`, need real cards/SAM).
-Deliberately still skipped: the write ops `0x96`/`0x9A` and reset subcodes
-`0x10 03`/`04`.
+`reports/FEIG cVEND reader research.md`. `0xBC` DESFire reads now confirmed on a
+real card (above). Still untested / needs hardware: `0xB1`/`0xB9` ISO/DESFire
+auto-read events, `0xB4` card routing (needs the right DeviceSelect), `0xB6`
+SAMCtrl and `0xAC`/`0xAE` ITSO (need a SAM fitted). Deliberately still skipped:
+the write ops `0x96`/`0x9A` and reset subcodes `0x10 03`/`04`.
 
 ## `0xD0` EMV — toggle-polling (tested 2026-11-19)
 
