@@ -92,12 +92,37 @@ unsigned char*)` handler — the entire dispatch, by name:
 Infrastructure: `IppChannel`/`IppHandling` (framing, `_sendHeartbeat`,
 `sendStartup`), `CMDProcessor` (`GetNextCommand`, `SendOK`/`SendErr`/`SendResponse`),
 `msg_factory.cpp`, `CommBuffer`, `Crc8`/`Crc16`/`Crc32`, `DesfireCrypto`, `aes`/`des`.
-Because the binary keeps symbols, any remaining opcode format can be recovered by
-disassembling its named handler. `0x9C` FileInfo (above) was cracked this way:
-`IppHandlerFileInfo::handleIppTele` reads `[u16 pathlen][path]`, needs two trailing
-u32s, and calls `getFileSizeAndCrc32(path,u32,u32,&size,&crc)`. Next targets, if
-wanted: `ProxCardCtrlHandlerApduProx` (the `0xB4` DeviceSelect), `SamCtrl`, and the
-`ITSO*` set.
+Because the binary keeps symbols, any opcode format can be recovered by
+disassembling its named handler. The binary also carries INIT's **source tree**
+(`//home/jah/git/init/proxcontroller-feig2/src/…`), which maps the whole codebase:
+`ipp/` (Ipp, IppHandling, IppHeader, IppBaseTelegram, ItsoIppHandler), `card/`
+(the eight handlers — `ProxCardVdvKa`(4), `MifareClassic`(5), `Iso`(6),
+`Desfire`(7), `Girogo`(8), `Itso`(9), `UltralightC`(10), plus `ProxCardCtrl`),
+`emv/`, `girogo/`, `sam/` (SAM, SamAV1AV2, SamCtrl), `securityServices/`,
+`crypto/DesfireCrypto`, `device/{Buzzer,Leds}`, `serial/Serial`, `RFIDReaderMultiApp`.
+
+Decoded by disassembly this session:
+
+- **`0x9C` FileInfo** — `IppHandlerFileInfo::handleIppTele` reads `[u16 pathlen]
+  [path]`, needs two trailing u32s, calls `getFileSizeAndCrc32(path,u32,u32,
+  &size,&crc)`; reply as in the table above.
+- **`0xB4` APDUProx** — `ProxCardCtrlHandlerApduProx::handleIppTele` checks the
+  card-controller state: only when an **ISO14443-4 card is handled by
+  `ProxCardIso`** (state `2`) does it `dynamic_cast` and call
+  `ProxCardIso::handlerApduProx`; otherwise it returns `0xB5` with the echoed
+  first byte and status `0x70` "no card". So the first byte is **echoed, not a
+  device selector** at this layer, and a **DESFire won't work** (it's claimed by
+  `ProxCardDesfire`, not `ProxCardIso`). The handler builds
+  `IsoAPDU(CLA,INS,P1,P2,Lc,data,Le)` from payload bytes `[1..]` and transceives;
+  failure writes status `0x6C` "no session" (both status codes match the wiki).
+  To exercise `0xB4`, present a plain ISO-4 card (e.g. an EMV card), not a DESFire.
+- **`0xB6` SAMCtrl** — `SamCtrl::handleIppTele`: first payload byte is a subcommand
+  (compared against `4`, the four SAM slots), followed by an APDU to the SAM;
+  reply `0xB7`, status `0x72` on error (`_sendApduError`), using
+  `SAM`/`SamAV1AV2` with `C_OpenSession`/`C_CloseSession`. Needs a SAM fitted —
+  untestable on our unit.
+
+Remaining disasm target: the large `ITSO*` family (`0xAC`/`0xAE`).
 
 ## `0xD0` EMV — toggle-polling (tested 2026-11-19)
 
