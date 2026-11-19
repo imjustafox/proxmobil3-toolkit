@@ -123,6 +123,65 @@ Production Terminal CA, device id 17EE5468). None of this is required for raw UI
 and sending it stops the autonomous scan. nx does not send any periodic poll
 command afterward — continuous scanning is the reader's own behavior.
 
+## Reader internals: the FEIG cVEND OS
+
+The NFC reader is a **FEIG ELECTRONIC cVEND** (a flush-mount contactless payment
+module for transit validators), not just a UART peripheral — it runs its own
+embedded Linux. `/etc/issue` says `FEIG ELECTRONIC GmbH - cVEND Development Kit`;
+`/etc/os-release` is **Buildroot 2014.05**; the app is `/home/app0/feig` (an ARM
+ELF run in a restart loop by `/home/app0/run`), firmware **02.35**. The `0x02`
+Version reply carries three fields: device id `17ee5468`, model/build string
+`cS01.05.45-49.00-2-2`, firmware `02.35`, cwd `/home/app0`.
+
+Two protocols coexist. The host link we speak (`0xBC` "IPP") is INIT's own
+closed payment-host protocol; FEIG's *public* OBID/ID-ISC reader protocol instead
+uses a `0x02` start byte, so IPP only borrows its shape. The air-interface
+payloads inside IPP are standard, though: DESFire and Ultralight-C opcodes match
+the public NXP sets, and `emvco_ep_configure`/`_preprocess` are EMVCo Book B
+Entry-Point calls. See `reports/FEIG cVEND reader research.md` for the full public
+documentation map.
+
+### Reading the reader's filesystem (file operations)
+
+The reader exposes read/write file ops over IPP. Two are wrapped in `pm3.py`
+(read-only; the write ops `0x96` PutFile / `0x9A` DeleteFile are left alone):
+
+```sh
+./pm3.py cvend-ls /home/app0          # 0xA4 FileList -> name + mtime per entry
+./pm3.py cvend-cat /etc/fetpfrc        # 0x98 GetFile  -> file contents
+./pm3.py cvend-cat /home/app0/config --hex --count 0x4000
+```
+
+- **`0x98` GetFile** = `[u16 pathlen][path][u32 offset][u16 count]` → `0x99
+  [u32 len][data]` (one frame, so `count` ≲ 60 KB; use `offset` to page).
+- **`0xA4` FileList** = `[u16 pathlen][path]` → `0xA5 [u32 len][name\0mtime\0…]`.
+- `0x9C` FileInfo's payload format is not yet known (no reply to the obvious guesses).
+
+Worth reading: `/etc/fetpfrc` (JSON payment config — EMVCo permitted SAM slots,
+crypto/token plugins), `/home/startup_config.conf` (`STARTUP_APP="/home/app0"`),
+`/home/app0/run` (the app launcher), `/home/app0/emv/transact-counter.dat`. The
+apps `app0`–`app7` and `feig_app_loader` implement a fallback/update scheme. The
+~64 KB binary `/home/app0/config` is the FEIG reader config blob (likely holds
+the RF/power timers below) but did not yield to simple offset reads — an open
+lead.
+
+### Sleep behavior and keeping it awake
+
+The reader **auto-powers its RF field down after an idle timeout** and can drop to
+a `<1 mA` hardware standby that FEIG's datasheet says is left only "by digital
+input or timer" — there is **no host wake opcode**. Symptom: scanning stops, only
+the `0x07` Heartbeat (every **3.0 s**) continues, and a `0x04` Status does *not*
+reliably wake it. This is documented FEIG behavior, not a bug. Practical rules:
+
+- Keep a keepalive going and start the reader loop near boot; don't let it idle.
+- Our reset path is weak: `0x10` soft-resets wedge it, and re-arming a slept
+  reader is not reproducible. The one deterministic recovery is a **power cycle**,
+  then wait for the `0x0F` Startup frame (~60 s) before the enable/arm handshake.
+- Avoid probing it with unknown commands when idle — that is what has twice
+  tipped it into the sleep-lock. See `reports/FEIG cVEND reader research.md` for
+  the full prevention/recovery ladder and the (documented-for-OBID, unconfirmed-
+  for-cVEND) RF on-time config angle.
+
 ## Display, touch, LEDs
 
 Framebuffer `/dev/fb0`, 800×480, 32 bpp (BGRX), "DISP3 BG", i.MX `mxc_sdc_fb`

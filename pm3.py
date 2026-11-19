@@ -332,6 +332,59 @@ def cmd_cvend_watch(args):
     s.close()
 
 
+# --- cVEND file operations -------------------------------------------------
+# The reader runs its own embedded Linux (FEIG cVEND, Buildroot 2014.05). These
+# two IPP commands read its filesystem; layouts reverse-engineered by sniffing
+# nx and verified on hardware. Read-only -- the write ops (0x96 PutFile, 0x9A
+# DeleteFile) are deliberately not wrapped here.
+
+def cvend_filelist(s, path):
+    """0xA4 FileList -> 0xA5. Returns [(name, mtime_iso), ...] or None."""
+    pl = path.encode()
+    r = s.request(0xA4, struct.pack(">H", len(pl)) + pl, timeout=3.0)
+    if not r:
+        return None
+    body = r["data"][4:]  # skip u32 reply length
+    toks = [t.decode(errors="replace") for t in body.split(b"\0") if t]
+    return list(zip(toks[0::2], toks[1::2]))   # name, timestamp pairs
+
+
+def cvend_getfile(s, path, offset=0, count=0xF000):
+    """0x98 GetFile -> 0x99. payload=[u16 pathlen][path][u32 offset][u16 count];
+    reply=[u32 len][data]. One frame (count <= ~60KB). Returns bytes or None."""
+    pl = path.encode()
+    r = s.request(0x98, struct.pack(">H", len(pl)) + pl + struct.pack(">IH", offset, count),
+                  timeout=5.0)
+    if not r:
+        return None
+    d = r["data"]
+    n = struct.unpack(">I", d[:4])[0] if len(d) >= 4 else 0
+    return d[4:4 + n]
+
+
+def cmd_cvend_ls(args):
+    s = SshSerial(CVEND_TTY)
+    rows = cvend_filelist(s, args.path)
+    if rows is None:
+        print("(no reply -- not a directory, a plain file, or reader busy)")
+    else:
+        for name, mtime in rows:
+            print(f"{mtime}  {name}")
+    s.close()
+
+
+def cmd_cvend_cat(args):
+    s = SshSerial(CVEND_TTY)
+    data = cvend_getfile(s, args.path, args.offset, args.count)
+    if data is None:
+        print("(no reply)")
+    elif args.hex:
+        print(data.hex())
+    else:
+        sys.stdout.buffer.write(data)
+    s.close()
+
+
 # --- system ----------------------------------------------------------------
 
 def cmd_nx_stop(args):
@@ -388,6 +441,16 @@ def main():
     p.add_argument("--reset", action="store_true",
                    help="reset the reader (0x10) and wait for its 0x0F startup, then enable (reliable cold arm)")
     p.set_defaults(fn=cmd_cvend_watch)
+
+    p = sp.add_parser("cvend-ls", help="list a directory on the reader's own filesystem (0xA4)")
+    p.add_argument("path")
+    p.set_defaults(fn=cmd_cvend_ls)
+    p = sp.add_parser("cvend-cat", help="read a file from the reader's own filesystem (0x98)")
+    p.add_argument("path")
+    p.add_argument("--offset", type=int, default=0)
+    p.add_argument("--count", type=lambda x: int(x, 0), default=0xF000)
+    p.add_argument("--hex", action="store_true", help="print hex instead of raw bytes")
+    p.set_defaults(fn=cmd_cvend_cat)
 
     args = ap.parse_args()
     HOST = args.host

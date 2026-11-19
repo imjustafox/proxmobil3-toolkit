@@ -23,6 +23,38 @@ the two are complementary and worth reconciling.
   heartbeats continue but `0xD1`/`0xBE` stop. See the NFC recipe in
   `INTERFACE.md` for waking it.
 
+## Verification sweep (2026-11-19)
+
+Going message-type by message-type through the wiki against our unit. Confirmed,
+corrected, or newly pinned down:
+
+| Wiki item | Result on our unit |
+|---|---|
+| CRC-32 trailer ("no polynomial I recognize") | **CRC-32/JAMCRC**, confirmed |
+| `0x02`/`0x03` Version fields | deviceid `17ee5468`, model `cS01.05.45-49.00-2-2`, fw `02.35`, cwd `/home/app0` |
+| `0x04`/`0x05` Status | confirmed |
+| `0x07` Heartbeat interval (wiki: none) | **exactly 3.0 s** |
+| `0x0F` Startup | confirmed (~60 s after power-on) |
+| `0x22` Buzzer | big-endian `[u16 freq][u16 ms]`; ~2700 Hz loudest |
+| `0x98` GetFile (wiki: blank) | **`[u16 len][path][u32 off][u16 cnt]` → `[u32 len][data]`** |
+| `0xA4` FileList (wiki: blank) | **`[u16 len][path]` → `[u32 len][name\0mtime\0…]`** |
+| `0x9C` FileInfo | no reply to any guessed payload — **still open** |
+| `0xAA`/`0xAB` SetTime (wiki: blank) | payload = timestamp; reply `0xAB 0000` |
+| `0xD1` EMVStatus ("not understood") | BER-TLV dissected (see `reversing-nx.md`) |
+| `0xE4`/`0xE5` enable | confirmed; nx enables Mifare(5)+Desfire(7)+UltralightC(10) |
+| `0xE8` sub 0 (wiki: GetVersionOfKey) | **confirmed** — `SecurityServices.cpp:328`; sub 4 returns the cert |
+| `0xEA` (wiki: unknown) | handler **fails** (`IPP handler for cmd 0xea failed [Ipp.cpp:262]`); reply is `0xEB` (wiki omits `0xEB`) |
+| `0xED` Log levels 1/2/3 | confirmed (INFO/WARN/ERROR) |
+| `0xBE` UnhandledCard / `0xD5` CARD IN | confirmed (UID carriers) |
+
+Reader identity established via the file ops: **FEIG cVEND Development Kit,
+Buildroot 2014.05, firmware 02.35** — see `INTERFACE.md` "Reader internals". Deep
+research mapping public FEIG/NXP/EMVCo docs to our RE is in
+`reports/FEIG cVEND reader research.md`. Still untested / needs hardware: `0x20`
+LED (needs a human watching the reader face), the DESFire/APDU card paths
+(`0xB1`/`0xB9`/`0xBC`/`0xB4`/`0xB6`), and the deliberately-skipped risky ones
+(`0x10` reset, `0x96`/`0x9A` writes).
+
 ## `0xD0` EMV — toggle-polling (tested 2026-11-19)
 
 **Wiki:** `0xD0` first byte selects a subcommand (`0` load config, `1`
