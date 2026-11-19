@@ -69,6 +69,7 @@ PM3_HOST=<unit-ip> ./pm3.py info            # kernel, services, ttys
 ./pm3.py cvend-restart                         # software-restart the reader (wakes a slept one, ~6s)
 ./pm3.py cvend-ls /home/app0                   # list the reader's own filesystem
 ./pm3.py cvend-cat /etc/os-release             # read a file off the reader
+./pm3.py cvend-finfo /home/app0/version        # file size + CRC32 (0x9C)
 ./pm3.py beep --freq 2700 --ms 120            # piezo buzzer
 ./pm3.py nx-stop / nx-start                   # stop/start the stock UI
 ```

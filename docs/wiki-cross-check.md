@@ -39,7 +39,7 @@ corrected, or newly pinned down:
 | `0x20` LEDs (wiki knew only bits `0x40`/`0x80`) | **all 8 low-byte bits mapped** on the opened board: `0x01`–`0x08` = 4-LED green status row; `0x10`/`0x20` = row-3 amber / row-4 red (bi-colour); `0x40`/`0x80` = logo right/left. Upper 3 bytes **inert** (swept all 32 bits) |
 | `0x98` GetFile (wiki: blank) | **`[u16 len][path][u32 off][u16 cnt]` → `[u32 len][data]`** |
 | `0xA4` FileList (wiki: blank) | **`[u16 len][path]` → `[u32 len][name\0mtime\0…]`** |
-| `0x9C` FileInfo | request `[0x00][u16 len][path]` → `0x9D`, but reply bytes vary per call — **format partially open** |
+| `0x9C` FileInfo | **solved** (via disasm): request `[u16 pathlen][path][u32][u32]`; reply `0x9D` (10 bytes) `[status:u16][size:u32 BE][crc32:u32 BE]` (CRC is a FEIG variant). The two u32s are the CRC range (`0,0` = whole file) |
 | `0x10` Reset subcode `2` | **clean software restart** — `0x11` reply, `0x0F` Startup in ~6 s, serial preserved, scanning fresh (the sleep recovery) |
 | `0xAA`/`0xAB` SetTime (wiki: blank) | payload = timestamp; reply `0xAB 0000` |
 | `0xD1` EMVStatus ("not understood") | BER-TLV dissected (see `reversing-nx.md`) |
@@ -59,6 +59,45 @@ real card (above). Still untested / needs hardware: `0xB1`/`0xB9` ISO/DESFire
 auto-read events, `0xB4` card routing (needs the right DeviceSelect), `0xB6`
 SAMCtrl and `0xAC`/`0xAE` ITSO (need a SAM fitted). Deliberately still skipped:
 the write ops `0x96`/`0x9A` and reset subcodes `0x10 03`/`04`.
+
+## The feig firmware binary — command dispatch map (static analysis)
+
+Pulled `/home/app0/feig` off the reader with the file ops (`pm3.py cvend-cat`,
+1.6 MB) and ran `objdump`/`c++filt` on it. It is an **unstripped** `elf32-littlearm`
+C++ binary, so every IPP opcode maps to a named `*::handleIppTele(IppHeader, const
+unsigned char*)` handler — the entire dispatch, by name:
+
+| Opcode | Handler class (`::handleIppTele`) |
+|---|---|
+| `0x02` Version | `IppHandlerVersion` |
+| `0x04` Status | `IppHandlerStatus` |
+| `0x10` Reset | `IppHandlerReset` |
+| `0x20` LEDs | `LedsIppHandler` |
+| `0x22` Buzzer | `BuzzerIppHandler` |
+| `0x32`/`0x46` CardRelease/Abort | `ProxCardCtrlHandlerCardReleaseGeneric`, `ProxCardIso::handlerCardReleaseIso` |
+| `0x96`/`0x98`/`0x9A`/`0x9C`/`0xA4` file ops | `IppHandlerPutFile` / `GetFile` / `DeleteFile` / `FileInfo` / `FileList` |
+| `0xAA` SetTime | `IppHandlerSetTime` |
+| `0xAC`/`0xAE` ITSO | `ItsoIppHandler` (+ a large `ITSO*` module family) |
+| `0xB4` APDUProx | `ProxCardCtrlHandlerApduProx`, `ProxCardIso::handlerApduProx` |
+| `0xB6` SAMCtrl | `SamCtrl` |
+| `0xBC`/`0xB9` DESFire | `ProxCardDesfire` |
+| `0xD4`/`0xD5` Ultralight-C | `ProxCardUltralightC` |
+| Mifare Classic | `ProxCardMifareClassic` |
+| `0xD0`/`0xD1` EMV | `EmvIppHandler`, `EmvReader` |
+| Girogo | `GirogoIppHandler` |
+| `0xE4` enable | `ProxCardCtrlHandlerFunction` |
+| `0xE8` SecurityServices | `SecurityServicesIppHandler` |
+| generic | `IppHandlerGenericCommand` |
+
+Infrastructure: `IppChannel`/`IppHandling` (framing, `_sendHeartbeat`,
+`sendStartup`), `CMDProcessor` (`GetNextCommand`, `SendOK`/`SendErr`/`SendResponse`),
+`msg_factory.cpp`, `CommBuffer`, `Crc8`/`Crc16`/`Crc32`, `DesfireCrypto`, `aes`/`des`.
+Because the binary keeps symbols, any remaining opcode format can be recovered by
+disassembling its named handler. `0x9C` FileInfo (above) was cracked this way:
+`IppHandlerFileInfo::handleIppTele` reads `[u16 pathlen][path]`, needs two trailing
+u32s, and calls `getFileSizeAndCrc32(path,u32,u32,&size,&crc)`. Next targets, if
+wanted: `ProxCardCtrlHandlerApduProx` (the `0xB4` DeviceSelect), `SamCtrl`, and the
+`ITSO*` set.
 
 ## `0xD0` EMV — toggle-polling (tested 2026-11-19)
 

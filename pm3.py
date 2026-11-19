@@ -362,6 +362,32 @@ def cvend_getfile(s, path, offset=0, count=0xF000):
     return d[4:4 + n]
 
 
+def cvend_fileinfo(s, path, off=0, length=0):
+    """0x9C FileInfo -> 0x9D. payload=[u16 pathlen][path][u32 off][u32 length];
+    reply (10 bytes) = [status:u16][size:u32 BE][crc32:u32 BE] (CRC is a FEIG
+    variant, not standard/JAM CRC-32). off/length bound the CRC range; 0,0 =
+    whole file. Returns (status, size, crc32) or None."""
+    pl = path.encode()
+    r = s.request(0x9C, struct.pack(">H", len(pl)) + pl + struct.pack(">II", off, length),
+                  timeout=2.5)
+    if not r or len(r["data"]) < 10:
+        return None
+    status = struct.unpack(">H", r["data"][0:2])[0]
+    size, crc = struct.unpack(">II", r["data"][2:10])
+    return status, size, crc
+
+
+def cmd_cvend_finfo(args):
+    s = SshSerial(CVEND_TTY)
+    info = cvend_fileinfo(s, args.path)
+    if info is None:
+        print("(no reply / short reply)")
+    else:
+        st, size, crc = info
+        print(f"status={st:#04x}  size={size}  crc32={crc:#010x}")
+    s.close()
+
+
 def cmd_cvend_ls(args):
     s = SshSerial(CVEND_TTY)
     rows = cvend_filelist(s, args.path)
@@ -468,6 +494,9 @@ def main():
     p.add_argument("--count", type=lambda x: int(x, 0), default=0xF000)
     p.add_argument("--hex", action="store_true", help="print hex instead of raw bytes")
     p.set_defaults(fn=cmd_cvend_cat)
+    p = sp.add_parser("cvend-finfo", help="file size + CRC32 from the reader's filesystem (0x9C)")
+    p.add_argument("path")
+    p.set_defaults(fn=cmd_cvend_finfo)
 
     args = ap.parse_args()
     HOST = args.host
