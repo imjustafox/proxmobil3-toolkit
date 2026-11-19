@@ -122,7 +122,27 @@ Decoded by disassembly this session:
   `SAM`/`SamAV1AV2` with `C_OpenSession`/`C_CloseSession`. Needs a SAM fitted —
   untestable on our unit.
 
-Remaining disasm target: the large `ITSO*` family (`0xAC`/`0xAE`).
+Scheme-handler internals recovered from symbols + `.rodata`:
+
+- **`0xD0` EMV** — `EmvIppHandler` subcommand enum read straight from `.rodata`:
+  `CONFIG=0`, `SETUP=1`, `POLL=2`; the POLL argument is `POLL_START=0`/
+  `POLL_STOP=1`, and results are `RES_OK=0`/`RES_NOK=1`. This confirms the wiki
+  and our live `0xD0 02 00`/`02 01` test exactly. `EmvReader` has
+  `loadConfig(filename)`, a built-in `DEFAULT_CONFIG`, `startPolling`/
+  `stopPolling`, `initTransaction`, `onlineRequest`, `track2` — so the "can't poll
+  without a config" behaviour is by design, and a `DEFAULT_CONFIG` exists.
+- **`0xE8` SecurityServices** — a **PKCS#11 (Cryptoki)** key/cert store
+  (`fepkcs11` tokens/slots, sessions/login). Methods: `GenerateRandom`,
+  `AES_encrypt`/`AES_decrypt`, `GetDerivedKey` (NXP CMAC), `ImportKeyBlock`
+  (TR-31), `ImportX509Cert`/`RemoveX509Cert`, `_findKey`/`_findCertificate`/
+  `_unwrapKey`. Our tested sub-0 (`GetVersionOfKey`) and sub-4 (cert read) are the
+  read-only corners of this API; the import/derive/generate subcommands are
+  key-management writes and are left alone.
+- **`0xAC`/`0xAE` ITSO** — `ItsoIppHandler::_handleItsoDataReq` (`0xAC`) and
+  `_handleItsoCtrlReq` (`0xAE`); `ProxCardItso` drives it through an **ISAM**
+  (`_connectSamReader`, `setIsamPasswd`, `hl2DataRequest`, `_getPostSAM`). Needs a
+  fitted ISAM, so untestable here; the large `ITSO*` module set implements the
+  Shell/IPE/HOPS logic.
 
 ## `0xD0` EMV — toggle-polling (tested 2026-11-19)
 
