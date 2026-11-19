@@ -89,6 +89,20 @@ unsigned char*)` handler — the entire dispatch, by name:
 | `0xE8` SecurityServices | `SecurityServicesIppHandler` |
 | generic | `IppHandlerGenericCommand` |
 
+**Authoritative opcode list** (read from the `Ipp::setDataHandler(u8 opcode,
+IppHandler*)` registration calls — dispatch is a 256-entry table indexed by the
+msgType byte): `0x02` Version, `0x04` Status, `0x10` Reset, `0x20` LEDs, `0x22`
+Buzzer, `0x32` CardRelease, `0x46` AbortCardHandling, `0x96` PutFile, `0x98`
+GetFile, `0x9A` DeleteFile, `0x9C` FileInfo, `0xA4` FileList, `0xAA` SetTime,
+`0xAC` ITSOData, `0xAE` ITSOCtrl, `0xB4` APDUProx, `0xB6` SamCtrl, `0xBA`
+(DESFire-area, wiki "unknown"), `0xBC` DESFireCommand, `0xCE` (IppHandling, wiki
+"unknown"), `0xD0` EMV, `0xD4` UltralightCommand, `0xE4` ProxCardFunction,
+`0xE6` Girogo (wiki "unknown"), `0xE8` SecurityServices, `0xEA` (Mifare — the
+handler exists but errors, as observed), and a `0x00` registration. This confirms
+every opcode numerically and resolves the wiki's unknowns `0xBA`/`0xCE`/`0xE6`/
+`0xEA` as real registered handlers in the DESFire / IppHandling / Girogo / Mifare
+modules respectively.
+
 Infrastructure: `IppChannel`/`IppHandling` (framing, `_sendHeartbeat`,
 `sendStartup`), `CMDProcessor` (`GetNextCommand`, `SendOK`/`SendErr`/`SendResponse`),
 `msg_factory.cpp`, `CommBuffer`, `Crc8`/`Crc16`/`Crc32`, `DesfireCrypto`, `aes`/`des`.
