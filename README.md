@@ -13,6 +13,9 @@ software — reading NFC cards and barcodes, driving the screen, buzzer, and sen
   have to be rediscovered.
 - **`docs/wiki-cross-check.md`** — results of running the `wiki.pm3.dev` cVEND
   commands against our actual unit: confirmations, corrections, and runtime details.
+- **`docs/feig-firmware.md`** — top-to-bottom static reverse-engineering of the
+  reader's own `feig` application (the IPP dispatch, card schemes, SAM, HSM, ITSO,
+  EMV, girogo, crypto), from the unstripped binary's symbols and disassembly.
 - **`pm3.py`** — the toolkit: IPP protocol, card reading, buzzer, PIC32 sensors,
   EEPROM access. Runs on your computer, bridges the device's serial ports over SSH.
 - **`tap_demo.py`** — a working app: tap a card, its UID shows on the device screen
