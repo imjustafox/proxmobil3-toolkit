@@ -129,7 +129,49 @@ cloud and no OAuth. It does **not** reach the Bytemark backend or use the real
 credentials (which stay in `dumps/`). See `docs/reversing-nx.md` and
 `docs/wiki-cross-check.md` for driving nx in service headlessly.
 
-## 4. Cross-references
+## 4. Boot chain and the access mechanism
+
+**U-Boot `2018.03-INIT-004`** (Mar 2019) on the TQMa6S module, debug console on
+`ttymxc1` (the "ARMcons" header), `bootdelay` 1–3 s. Boot flow:
+
+- `bootcmd = run sdboot; run failover; run sdboot; run panicboot`.
+- `sdboot`/`mmcboot` → `loadimage` + `loadfdt` fetch the kernel (`${kernel_name}`)
+  and device tree (`${fdt_name}`) either from the SD boot partition
+  (`ext4load usb …:boot/…`) or from **SPI flash** (`sf probe; sf read` at
+  `${kernel_start}`/`${kernel_sectors}`), then boot.
+- **A/B failover:** `failover=setenv kernel_name ${kernel_name}.old; setenv
+  fdt_name ${fdt_name}.old` — on a bad boot it retries the `.old` kernel/DTB, so a
+  failed update rolls back. `panicboot` resets if nothing boots.
+- `netboot` (TFTP from `serverip`, NFS `rootpath=/srv/nfs/tqma6`) is a dev-only
+  fallback. `mmcargs = run addmmc addtty addfb addcma` assembles the kernel
+  cmdline (root=`/dev/sda1 ro`, console, framebuffer, `cma=128M`).
+
+**Userland init** (systemd): mounts `/init` (`sdb1`), runs `init-rc.service` which
+executes the `/init/autorun/*.sh` scripts in order, then normally starts
+`nx.service` + `init-abtproxy.service`. The autorun scripts are the device's
+**maintenance/access mechanism**:
+
+1. `10-eeprom.sh` — dumps the dongle's EEPROM to `/tmp/eeprom.dat` via
+   `NxExe eepromdump` (the "NX Toolbox" CLI; other subcommands include `watchdog`),
+   with a 5 s timeout, then normalizes it to text.
+2. `20-ext-sdcard.sh` — mounts the mounting-plate external SD/USB
+   (`platform-ci_hdrc.1-usb-…-part1`) at `/init/efad/mp_sd`; if absent it replaces
+   the mountpoint with a plain *file* so nx notices rather than silently writing to
+   the internal SD.
+3. `90-testmode.sh` — **the access trigger**: if `/tmp/eeprom.dat` contains a
+   `[TestMode]` section, it `systemctl stop nx`, runs `NxExe watchdog 0`, extracts
+   the shell script lines under `[TestMode]`, and **executes them**. This is how a
+   PROXdongl3 with a `[TestMode]` EEPROM payload gets arbitrary boot-time code with
+   nx stopped and the watchdog disabled — i.e. how our `usb/autorun.sh` installs an
+   SSH key (see `README.md` / `PROCESS.md`).
+4. `99-devmode.sh` — fallback: if `NxProx` is missing, stop nx and disable the
+   watchdog (dev mode), else just `chmod +x` it.
+
+So the trust path into the device is: dongle EEPROM `[TestMode]` → `90-testmode.sh`
+runs it → root shell / SSH, persisting because the installed key survives on
+`/init`. No bootloader password or secure-boot gate is in the way on this unit.
+
+## 5. Cross-references
 
 - Hardware, peripherals (PIC32, barcode, audio, framebuffer, networking, the
   dongle EEPROM): `INTERFACE.md`.
