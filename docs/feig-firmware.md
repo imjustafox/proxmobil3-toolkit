@@ -201,3 +201,71 @@ Ultralight-C, ISO-APDU, girogo, VDV-KA, ITSO, EMV) and their security backends
 identified at the API level. What cannot be exercised on this unit is only what
 needs hardware we don't have (a fitted SAM/ISAM) or provisioning we don't hold (an
 EMV config, scheme keys) — not anything undiscovered.
+
+## 11. Provisioning: what the hardware/secret-gated features need
+
+The features we can't exercise aren't mysteries — we can state exactly what each
+would require, from the firmware.
+
+### EMV config (`0xD0` CONFIG / `EmvReader::loadConfig`)
+
+How it loads, from disassembly of `EmvReader::loadConfig(const char* path)`:
+
+1. `fopen(path, "r")` — a **text** file. The default path is **`emv/default.conf`**
+   (`EmvReader::DEFAULT_CONFIG`), i.e. `/home/app0/emv/default.conf`. The `0xD0`
+   subcommand `CONFIG` (0) passes a null-terminated filename to load instead.
+2. `fscanf(fp, "%02x", …)` in a loop — the file is **ASCII hex**, two hex digits
+   per byte, decoded into a binary buffer.
+3. `fetpf_ep_configure(buf, len)` then `tlv_parse(buf, len)` — the decoded bytes
+   are the **EMVCo entry-point configuration as BER-TLV**, handed to FEIG's FETPF
+   EMV framework.
+
+So an EMV config file is a hex dump of a BER-TLV structure encoding the **EMVCo
+Book A/B "reader combinations"**: per supported brand, an AID + Kernel ID +
+transaction type + terminal floor limit + CVM-required limit + contactless
+transaction limit + TTQ/terminal-capability flags. Error paths confirm the shape:
+*"Failed to parse configuration TLV structure"*, *"Malformed config string
+received"*, *"Failed to configure EMV entrypoint"*, *"Failed to open EMV config
+file '%s'"*.
+
+**On our unit the file is absent** (`/home/app0/emv/` holds only
+`transact-counter.dat`), so `fetpf_ep_configure` is never called and polling
+refuses with *"no config"*. That is consistent with a closed-loop / account-based
+(CapMetro) deployment that never provisioned the open-loop EMV kernels, even
+though the FETPF kernels (`fetpf_new`/`_ep_configure`/`_ep_preprocess`/
+`_ep_transaction`/`_process_card`) are all present in the binary. To bring EMV up
+one would drop a valid hex-TLV combination file at `emv/default.conf` (or name one
+via `0xD0` CONFIG) — which needs real EMVCo brand/AID configuration we don't have
+and isn't our goal.
+
+### SAM (`0xB6` / `SamAV1AV2`)
+
+Needs a physical **NXP MIFARE SAM AV2** fitted in one of the module's four ID-000
+(SIM-size) SAM sockets (the cVEND SAM extension board). The SAM holds the
+diversified scheme keys; `ProxCardDesfire::_authenticateFromSAM` and the transit
+handlers authenticate cards through it. `0xB6` = `[subcommand/slot (checked
+against 4)][ISO7816 APDU to the SAM]` → `0xB7` (status `0x72` on error). With no
+SAM seated, every `0xB6` and every `_authenticateFromSAM` path errors. The
+host-visible API is `SAM_GetVersion` / `SAM_SelectApplication` /
+`SAM_AuthenticatePICC` with a host-authentication step (`isHostAuthenticated`).
+
+### ITSO (`0xAC`/`0xAE` / `ProxCardItso`)
+
+Needs an **ISAM** (ITSO Security Access Module) reachable via
+`ProxCardItso::_connectSamReader`, unlocked with an ISAM password
+(`setIsamPasswd`). A card presents an **ITSO Shell** (a directory `ITSODir` of IPE
+products `ITSOIpe`); `hl2DataRequest` does the HL2 exchange, and transactions are
+MAC'd by `ITSO_SoftSAM`/`ITSO_PostSAM`/`ITSO_HopsSAM` and serialized as
+`ITSO_POST_to_HOPS_File` **XML** for the back office. Without an ISAM and ITSO
+cards none of this runs, but the data model (typed `ITSO*Value` objects assembled
+into `ITSOMessage`) and the SAM operations (`CreateIPE`/`ModifyIPE`/`SealDir`/
+`GenerateMAC`/`VerifyMAC`) are fully present.
+
+### Scheme keys (DESFire/Ultralight-C/Mifare Classic)
+
+Reading a card's **UID and pre-auth metadata** (DESFire GetVersion/GetApplicationIDs
+via `0xBC`, UID via `0xBE`) needs nothing. Reading stored **fare data** needs the
+scheme's diversified keys, held in the SAM or the PKCS#11 HSM — which this unit
+doesn't carry for other agencies' cards, and which we would not use against cards
+that aren't ours. This is a key/authorization gate, not a missing feature: the
+`authenticate*`/`_credit`/`_debit`/`_writeData` engines are all there.
