@@ -25,9 +25,13 @@ backend client**, which is the host's most substantial piece.
   - `/dev/sdb1` → `/init` — ext4, read-write: all the app payload (`efad/` = nx,
     `abtproxy/`, `autorun/`, `system/`, `tools/`, …).
   - `/dev/sdc1` → `/init/efad/mp_sd` — the dongle/USB, vfat.
-  - `mtdblock0` — 16 MB SPI flash (U-Boot + environment).
+  - `mtdblock0` — 16 MB SPI NOR (Micron **N25Q128**, `m25p80`), holding U-Boot +
+    environment (and the kernel/DTB for the `sf read` boot path).
   - Imaged copies: `dumps/sda.img`, `dumps/sdb.img`, `dumps/mtdblock0.img`
     (git-ignored), extracted under `dumps/extracted/`.
+- **Crypto:** the i.MX6 **CAAM** engine (Era 4) with a hardware RNG4 is active
+  (`caam` in `/proc/crypto`) — available to the host for crypto/entropy,
+  independent of the reader's HSM.
 - **Init:** systemd. The two app services are `init-abtproxy.service` (enabled)
   and `nx.service` (disabled by default; `FailureAction=poweroff`, so be careful —
   see `docs/feig-firmware.md`/`INTERFACE.md`). Our SSH/autorun path runs instead of
@@ -120,6 +124,22 @@ CREATE TABLE OfflineTransactions (TRANSACTION_DATA TEXT NOT NULL);
 Each row is a JSON tap/validation event captured while offline, uploaded in
 batches to `validation_event_batches` and then cleared. (Rows are rider card data
 — not examined or published.)
+
+### Synced data files (`/init/abtproxy/`)
+
+The files `proxy_server` caches from the backend, with their shapes (values are
+rider/agency data — schema only):
+
+- **`labels.json`** — `{"labels": [ { "id": int, "type": str, "value": str,
+  "group": null, "additional_items": [] }, … ]}` (79 entries on our unit; nx loads
+  the subset with a valid designator). The fare-product label table shown on
+  screen (e.g. day passes, concessions).
+- **`denylist.json`** (~1.3 MB) — a Bytemark API envelope `{"data": …,
+  "errors": [], "server_time": …}` where `data` is the card hotlist pulled from
+  `/validation_lists`. Blocked card tokens; not examined/published.
+- **`keys.json`** — the `/v1/device/keys` payload (card application keys);
+  **secret**, git-ignored.
+- **`VERSION.info`** — `V1.3.6`. `proxyDB.db` is the SQLite queue (above).
 
 ### Driving it offline ourselves
 
