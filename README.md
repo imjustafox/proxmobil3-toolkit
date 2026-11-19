@@ -16,6 +16,10 @@ software — reading NFC cards and barcodes, driving the screen, buzzer, and sen
 - **`docs/feig-firmware.md`** — top-to-bottom static reverse-engineering of the
   reader's own `feig` application (the IPP dispatch, card schemes, SAM, HSM, ITSO,
   EMV, girogo, crypto), from the unstripped binary's symbols and disassembly.
+- **`docs/host-system.md`** — the i.MX6 host system: boot/storage, and the
+  account-based-ticketing backend (`proxy_server`/abtproxy — local HTTP API, the
+  Bytemark "UVAPI" cloud flow, online/offline validation, passback, the SQLite
+  queue). Secrets redacted.
 - **`pm3.py`** — the toolkit: IPP protocol, card reading, buzzer, PIC32 sensors,
   EEPROM access. Runs on your computer, bridges the device's serial ports over SSH.
 - **`tap_demo.py`** — a working app: tap a card, its UID shows on the device screen
