@@ -249,7 +249,60 @@ End to end: a tap goes reader → `NxIppFeig` → `opscript.nxs` policy → the 
 ABT backend (`proxy_server`, §3) → accept/deny → GUI + buzzer, with the result and
 any offline transaction recorded.
 
-## 6. Cross-references
+## 6. Network and management interfaces
+
+What the host exposes, and how it's meant to be managed. With nx stopped only the
+system services listen (`:22` SSH, systemd-resolve `:53`/`:5355`, DHCP). With nx
+running it opens exactly two more ports:
+
+- **`127.0.0.1:26` — `NxRemoteShellService`** (localhost-only; "Allow NxRemoteShell
+  only for localhost"). A login-gated **maintenance shell** (`Login:` / `Password:`
+  → `Welcome` / "Attention! Wrong Password!"). It runs nx's internal shell
+  (`NxShell`/`NxShellFuncService`) — see the command set below.
+- **`0.0.0.0:51001` — ISI** (`NxIsiService`, network-exposed). An XML management/
+  data interface for INIT's **COPILOTpc** platform: it answers with
+  `<IsiGet><Items>AppName</Items></IsiGet>` and, once the client sends
+  `<IsiId><AppName>…</AppName></IsiId>`, serves `<IsiGet>`/`<IsiPut>`/`<IsiExecute>`
+  over the on-board data model (items like `AppName`/`AppVersion` =
+  `COPILOTpcSrv`, `DeviceId`, `GpsData`, `Position`, `VehicleAddress`, `LineNr`,
+  `Status`, `SystemTime`, `Uptime`, `State`, plus a `Device`/`Driver`/`Door`/
+  `Line`/`Service` model). Mostly empty on our bench unit (no GPS/vehicle, out of
+  service). nx also carries an Avahi/mDNS advertiser (`_ibisip_http._tcp`,
+  IBIS-IP), a websocket, SSL sockets, UDP/multicast listeners, and even a **Kafka
+  telemetry client** — most dormant here.
+- **`:80` — `proxy_server`** (the ABT API, §3), when `init-abtproxy` runs.
+
+### The nx shell / `NxExe` command set
+
+The `:26` shell and the `NxExe` CLI expose the same "NX Toolbox" functions. We
+reach them as **root** without the maintenance login. Notable commands:
+`extshell <cmd> <timeout>` (run an arbitrary external shell command), `config`,
+`network`, `neighbors`, `state` (state-machine dump), `reboot`/`rebootAll`
+(controller + all PROXmobil), `uploadStatus` (firmware-update status),
+`eepromdump`, `watchdog <n>`, `memoryUsage`, `led`/`ledseq`/`ledtest`,
+`getsystime`/`geti2ctime`/`seti2ctime`, `list` (archives), `exprfile` (run the
+expression engine on a file); an `emvPay` sub-shell (`init`/`commit`/`cancel`/
+`validate`, gate `profiles`/`setProfile`); VDV-KA `getid`/`setid`, `resetSession`;
+and firmware flashers `loadpic` (flashes the PIC32 from `sc.hex`), `loadfpga`,
+`loadbios`, `loaddsp` and `loadpic{display,ioticket,mona,radiobox,touchfare,
+umtsgps}` (for other INIT hardware variants, not all present on a PM3).
+
+### The maintenance password (can we recover it?)
+
+Short answer: **there is nothing on this unit to recover.** The `:26` login is
+checked by `NxFVSCryptPasswordValidator` — an FVS-crypt hash of a **service-level**
+password (`NxOpCmdMaintenanceLogin`, "Password for a service level", `MAINTENANCELVL`)
+tied to an INIT **factory/master key** (`NxMasterKey`/`NxFactoryKey`, "default
+factory key"). No maintenance/service-level credential or hash is stored in the
+config, EEPROM, or any `.dat` on this surplus unit — the validator compares against
+a value provisioned at the operator/factory, not present here. So it isn't a hash
+to crack locally; there's simply no local secret. And it isn't needed: we already
+have **root SSH**, and the shell's powers (`extshell`, the `load*` flashers,
+`config`/`network`/`led`/`eeprom`/`watchdog`) are either ours directly via `NxExe`
+as root or need assets we lack (e.g. `sc.hex`). (A DESFire maintenance-card path,
+`NxProxFileConfigDesfireMaintenance`, also exists but likewise needs operator keys.)
+
+## 7. Cross-references
 
 - Hardware, peripherals (PIC32, barcode, audio, framebuffer, networking, the
   dongle EEPROM): `INTERFACE.md`.
