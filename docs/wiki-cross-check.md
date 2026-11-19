@@ -36,6 +36,7 @@ corrected, or newly pinned down:
 | `0x07` Heartbeat interval (wiki: none) | **exactly 3.0 s** |
 | `0x0F` Startup | confirmed (~60 s after power-on) |
 | `0x22` Buzzer | big-endian `[u16 freq][u16 ms]`; ~2700 Hz loudest |
+| `0x20` LEDs (wiki knew only bits `0x40`/`0x80`) | **all 8 low-byte bits mapped** on the opened board: `0x01`–`0x08` = 4-LED green status row; `0x10`/`0x20` = row-3 amber / row-4 red (bi-colour); `0x40`/`0x80` = logo right/left. Upper 3 bytes **inert** (swept all 32 bits) |
 | `0x98` GetFile (wiki: blank) | **`[u16 len][path][u32 off][u16 cnt]` → `[u32 len][data]`** |
 | `0xA4` FileList (wiki: blank) | **`[u16 len][path]` → `[u32 len][name\0mtime\0…]`** |
 | `0x9C` FileInfo | request `[0x00][u16 len][path]` → `0x9D`, but reply bytes vary per call — **format partially open** |
@@ -51,10 +52,10 @@ corrected, or newly pinned down:
 Reader identity established via the file ops: **FEIG cVEND Development Kit,
 Buildroot 2014.05, firmware 02.35** — see `INTERFACE.md` "Reader internals". Deep
 research mapping public FEIG/NXP/EMVCo docs to our RE is in
-`reports/FEIG cVEND reader research.md`. Still untested / needs hardware: `0x20`
-LED (needs a human watching the reader face) and the DESFire/APDU card paths
-(`0xB1`/`0xB9`/`0xBC`/`0xB4`/`0xB6`, need real cards/SAM). Deliberately still
-skipped: the write ops `0x96`/`0x9A` and reset subcodes `0x10 03`/`04`.
+`reports/FEIG cVEND reader research.md`. Still untested / needs hardware: the
+DESFire/APDU card paths (`0xB1`/`0xB9`/`0xBC`/`0xB4`/`0xB6`, need real cards/SAM).
+Deliberately still skipped: the write ops `0x96`/`0x9A` and reset subcodes
+`0x10 03`/`04`.
 
 ## `0xD0` EMV — toggle-polling (tested 2026-11-19)
 

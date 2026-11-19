@@ -201,11 +201,34 @@ touch node. The `QWS_MOUSE_PROTO=tslib:event0` in nx.service is INIT's generic
 template with nothing behind it. User input is NFC taps, barcode scans, and the
 single power button (PIC32 key 0x0100).
 
-The center NFC-logo LED is firmware-driven (it blinks with the reader's RF
-activity) and is not host-controllable. The `0x20` LED-bitmap message produced no
-change in any format tried. nx's own `led`/`ledseq`/`ledtest` shell commands exist
-but sit behind its remote shell on `localhost:26`, which needs a maintenance
-password that isn't on the device. Use the buzzer and the screen for feedback.
+The front LEDs **are** host-controllable via the cVEND `0x20` LED message — a u32
+bitmap (send 4 bytes big-endian; all eight LEDs live in the low byte). Verified
+bit-by-bit against the opened reader board:
+
+| Bit | LED |
+|---|---|
+| `0x01` | status row #1 — green |
+| `0x02` | status row #2 — green |
+| `0x04` | status row #3 — green |
+| `0x08` | status row #4 — green |
+| `0x10` | status row #3 — **amber** (same LED as `0x04`; green+amber reads amber) |
+| `0x20` | status row #4 — **red** (same LED as `0x08`; green+red reads red) |
+| `0x40` | NFC logo — right segment |
+| `0x80` | NFC logo — left segment |
+
+So it is a four-LED left-to-right **status row** (the two left are green-only, the
+two right are bi-colour green/amber and green/red) plus the two-segment logo.
+`s.send(0x20, struct.pack(">I", 0x0f))` lights all four green; `0x00` clears. The
+firmware also drives these during RF activity, so a host write holds only until
+the firmware next updates them (drive them from a loop if you want them steady).
+The upper three bytes of the u32 are **inert** — sweeping all 32 bits showed the
+eight LEDs live entirely in the low byte, with no brightness/blink/PWM field
+above it. (Our earlier "no change in any format" note was wrong — it was an
+artifact of reader state / nx holding the port.)
+
+nx's own `led`/`ledseq`/`ledtest` shell commands also exist but sit behind its
+remote shell on `localhost:26`, which needs a maintenance password that isn't on
+the device; the `0x20` message is the direct path.
 
 `/sys/class/leds` exposes only the SD-activity LEDs (`mmc0::`, `mmc1::`).
 
