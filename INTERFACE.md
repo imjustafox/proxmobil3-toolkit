@@ -55,7 +55,7 @@ is on a USB-serial (FTDI) bridge. All 115200 8N1.
 | `ttymxc1` | UART2 | okay | debug console ("ARMcons" 4-pin header), `console=ttymxc1` |
 | `ttymxc2` | UART3 | okay | PIC32 power/watchdog controller (IPP) |
 | `ttymxc3` | UART4 | okay | cVEND FEIG NFC reader (IPP) |
-| `ttymxc4` | UART5 | okay | wired and enabled but idle — a free port if you can reach its pins |
+| `ttymxc4` | UART5 | okay | spare RS232 — **TX/RX + RTS/CTS** (full flow control), ALT3 on the CSI0_DAT pads, 9600 8N1 default; no driver/peripheral bound, nothing opens it, no traffic. A free flow-control port if you can reach its pads (not on the DB15; needs the board schematic to locate) |
 | `ttyUSB0` | FTDI | — | barcode scanner (Honeywell N5680 / Code CR8200) |
 
 ## IPP protocol (PIC32 and cVEND)
