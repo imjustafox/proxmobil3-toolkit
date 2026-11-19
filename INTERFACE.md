@@ -106,6 +106,12 @@ transit card like ORCA returns its UID freely but its value is behind the
 consortium's DESFire keys, which this unit doesn't hold; the reader logs
 `transceive error on desf cmd 0x6E` and moves on.
 
+The reader polls two independent ways: this base ISO14443A scan (`0xBE`/`0xD5`/
+`0xB1`, no config needed, what we use), and a separate **EMV entry-point** poll
+(`0xD0` control → `0xD1` EMVStatus) that the transit/fare path uses and that is
+inert without an EMV config loaded. The `0xD0` toggle-polling command is therefore
+not a way to drive standalone UID reading; see `docs/wiki-cross-check.md`.
+
 ### nx's reader handshake (reference)
 
 Captured by LD_PRELOAD-sniffing nx's reads/writes on `/dev/ttymxc3` (see
