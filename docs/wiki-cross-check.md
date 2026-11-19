@@ -108,23 +108,76 @@ tried**, including 1261 rapid-fire reads. Root cause: `0xD4` operates on a
   then detects nothing at all (no `0xBE`/`0xD5`), even for a card that enters the
   field fresh after init. So `0xD4` still sees no card.
 
-**Takeaway:** enabling a handler + reaching `INITIALIZED` is necessary but not
-sufficient to make the reader *hold* a card for host commands; nx evidently does
-more to start handled-card polling. The clean next step is to **LD_PRELOAD-sniff
-nx while it actually handles a card** (drive it in service via `keyserver/`, tap
-a card, capture the exact frames between `INITIALIZED` and the card-read) — that
-will reveal the missing "start polling / select-and-hold" step, after which
-`0xD4` and `0x32` become testable. See `docs/reversing-nx.md` for the sniffer.
+**Why (investigated 2026-11-19 by sniffing nx and reproducing its init).** We
+LD_PRELOAD-sniffed nx (`sniffer/cvsniff.so`) while it was driven in service via
+`keyserver/`, with a Flipper emulating an NTAG216 in the field. nx's reader init,
+captured exactly, is:
+
+```
+0xEA 0100          wake/prime
+0x02               version
+0xE4 00 05 01 01   enable Mifare
+0xE4 00 07 01 01   enable Desfire
+0xE4 00 0a 01 01   enable UltralightC
+0xAA <timestamp>   SetTime
+0xE8 04fe0a0000    read device cert  -> 0xE9 (~1.1 KB X.509)
+```
+
+The moment the enables + SetTime land (even before the cert reply), the reader
+emits **`0xD5` CARD IN** with the UID and *holds* the card — the handled state we
+needed. We reproduced this with `pm3.cvend_enable(s, ["mifare","desfire",
+"ultralightc"])`: on an **awake** reader with the card present, it fires the same
+`0xD5` CARD IN. nx then read the card (confirmed: the validator toned and showed
+"show pass to operator").
+
+But host-driven `0xD4` reads **still fail (status 01)**, for two reasons that
+together make the host-read path unworkable here:
+
+1. **The reader's handler grabs then releases the card.** The UltralightC handler
+   runs its own transceive (a 3DES auth) against the tag and, on a plain NTAG216,
+   fails — `feclr_transceive() failed: status 0x00000002 [RFIDReaderMultiApp.cpp:159]`
+   — and releases it. The selected window is milliseconds.
+2. **Polling `0xD4` suppresses the reader's own scan.** During a max-rate `0xD4`
+   blast (2240 reads) the card-independent `0xD1` stream and `0xD5` events drop to
+   **zero** — the reader services host commands *or* scans autonomously, never
+   both. So while you poll `0xD4`, the reader never selects the card, and every
+   read returns "no card."
+
+**Conclusion.** Reading a card on this reader goes through its **internal
+handlers** (enable the type, let the reader transceive and report via
+`0xD1`/`0xB1`/`0xD5`) — which is exactly what nx does; nx never issues `0xD4`.
+Host-driven `0xD4`/`0x32` would need an explicit host-mode "select/activate card
+by UID and hold" primitive that keeps the reader from auto-releasing and doesn't
+fight the scan. We did not find one in the wiki or in nx's traffic. Also note the
+reader's handled-scan is **not autonomous**: stopping nx idles it (drops back to
+`0x05`/`0x07` only), so a standalone app must keep driving it.
+
+A Flipper is a fine ISO14443A **UID** source (it reliably triggers `0xBE`/`0xD5`),
+but a plain NTAG216/NTAG215(amiibo) can't satisfy the UltralightC handler's auth,
+so it's always released. A genuine Mifare **Ultralight-C** card would be needed to
+exercise the handler's read path — and even then, host `0xD4` faces the
+select-and-hold gap above.
 
 ## Pending
 
-- **`0x32` CardRelease / `0x46` AbortCardHandling.** Wiki: no payload, reply
-  `0xB3` ISOCardReleased. Blocked on the same gap as `0xD4` — needs the reader
-  holding a card. Revisit after the nx handled-card sniff above. Relevant to the
-  "same card only reads once until removed" behavior.
-- **`0xD4` Write/Authenticate.** Once a card can be held, test Write (`03`) and
-  the Authenticate variants (`04/05/06`) against a writable NTAG.
+- **`0x32` CardRelease / `0x46` AbortCardHandling, and `0xD4` Write/Auth.** All
+  blocked on the same gap as `0xD4` Read: no host-mode select-and-hold. They only
+  become testable if a "select/activate card by UID" primitive turns up (keep
+  watching nx traffic against a card type the reader's handler *accepts*, e.g. a
+  real Mifare Ultralight-C), or by catching the card mid-handling without the
+  scan-vs-poll contention. Lower priority now that the read path is understood.
 - **`0x10` Reset subcmds.** Wiki: `2` restart app, `3` reboot, `4` poweroff,
   `33–36` reset SAM 1–4. We know a reset wedges the reader (power-cycle to
   recover), so these stay untested — avoid `3`/`4` on a unit you can't
   physically power-cycle.
+
+## Bonus finding: driving nx in service, headless
+
+The `keyserver/` + sniffer path now works end to end and is worth recording: run
+`keyserve` as a **durable** process (`systemd-run --unit=keyserve --collect
+/init/keyserve` — a bare `&`/`setsid` from an ssh command does **not** survive),
+preload the sniffer via an `nx.service.d` drop-in, and start nx. nx fetches keys
+and labels from the local server (`loaded 51 valid labels`) and goes fully in
+service. Two safety notes learned here: the nx unit has `FailureAction=poweroff`,
+so add `FailureAction=none` to the drop-in while experimenting; and stopping nx
+idles the reader, so disable the watchdog in the same breath (`pm3.py nx-stop`).
