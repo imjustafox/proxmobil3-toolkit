@@ -274,6 +274,17 @@ The PIC32 is a power and health supervisor, not just a watchdog. Read its keys w
 Watchdog control: `./pm3.py watchdog 0`. Never send PIC32 IPP `0x0c` or `0x0e` with
 an empty payload — they power the unit off instantly.
 
+The PIC32 is a **PIC32MX795** (per nx's `spic/pic32mx795` driver). Firmware
+identity (keys `c000`/`c001`): app `PROXmobil3 PIC32 / PM3-P32` **rev 0.20**
+(Apr 2017), bootloader `PROXmobil3-Bootloader / PM3-BL` **rev 1.1** (Sep 2016), ©
+INIT GmbH. Its own program code is **not reachable** from here: the IPP interface
+exposes only value-keys, EEPROM (`0x0a`), the watchdog and sensors — there is no
+memory-read command, no PIC32 firmware image is bundled on the host (nx can flash
+it via the `PM3-BL` bootloader, but there's no read-back), and recovering the code
+would need physical ICSP/JTAG on the (code-protected) MCU. So the protocol above is
+the full extent of PIC32 understanding — the firmware internals are a hard limit,
+not an undone task.
+
 EEPROMs are read through the PIC32 with IPP `0x0a`:
 - `./pm3.py pic-raw 0a 10000000000080` → external EEPROM (the dongle or mounting
   plate). On our dongle this holds the `[TestMode]` autorun payload.
