@@ -8,6 +8,9 @@ software — reading NFC cards and barcodes, driving the screen, buzzer, and sen
 - **`INTERFACE.md`** — reference for every subsystem: boot, serial/IPP protocol,
   NFC reading, framebuffer, audio, sensors, networking.
 - **`PROCESS.md`** — how it was reverse-engineered, and the lessons from the dead ends.
+- **`docs/reversing-nx.md`** — the nx-specific RE techniques and the reader's
+  streaming frame formats (`0xD1` card record, `0xBE` UID), kept so the steps don't
+  have to be rediscovered.
 - **`pm3.py`** — the toolkit: IPP protocol, card reading, buzzer, PIC32 sensors,
   EEPROM access. Runs on your computer, bridges the device's serial ports over SSH.
 - **`tap_demo.py`** — a working app: tap a card, its UID shows on the device screen
