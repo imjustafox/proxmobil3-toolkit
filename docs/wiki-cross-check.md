@@ -38,7 +38,8 @@ corrected, or newly pinned down:
 | `0x22` Buzzer | big-endian `[u16 freq][u16 ms]`; ~2700 Hz loudest |
 | `0x98` GetFile (wiki: blank) | **`[u16 len][path][u32 off][u16 cnt]` → `[u32 len][data]`** |
 | `0xA4` FileList (wiki: blank) | **`[u16 len][path]` → `[u32 len][name\0mtime\0…]`** |
-| `0x9C` FileInfo | no reply to any guessed payload — **still open** |
+| `0x9C` FileInfo | request `[0x00][u16 len][path]` → `0x9D`, but reply bytes vary per call — **format partially open** |
+| `0x10` Reset subcode `2` | **clean software restart** — `0x11` reply, `0x0F` Startup in ~6 s, serial preserved, scanning fresh (the sleep recovery) |
 | `0xAA`/`0xAB` SetTime (wiki: blank) | payload = timestamp; reply `0xAB 0000` |
 | `0xD1` EMVStatus ("not understood") | BER-TLV dissected (see `reversing-nx.md`) |
 | `0xE4`/`0xE5` enable | confirmed; nx enables Mifare(5)+Desfire(7)+UltralightC(10) |
@@ -51,9 +52,9 @@ Reader identity established via the file ops: **FEIG cVEND Development Kit,
 Buildroot 2014.05, firmware 02.35** — see `INTERFACE.md` "Reader internals". Deep
 research mapping public FEIG/NXP/EMVCo docs to our RE is in
 `reports/FEIG cVEND reader research.md`. Still untested / needs hardware: `0x20`
-LED (needs a human watching the reader face), the DESFire/APDU card paths
-(`0xB1`/`0xB9`/`0xBC`/`0xB4`/`0xB6`), and the deliberately-skipped risky ones
-(`0x10` reset, `0x96`/`0x9A` writes).
+LED (needs a human watching the reader face) and the DESFire/APDU card paths
+(`0xB1`/`0xB9`/`0xBC`/`0xB4`/`0xB6`, need real cards/SAM). Deliberately still
+skipped: the write ops `0x96`/`0x9A` and reset subcodes `0x10 03`/`04`.
 
 ## `0xD0` EMV — toggle-polling (tested 2026-11-19)
 
@@ -198,10 +199,13 @@ select-and-hold gap above.
   watching nx traffic against a card type the reader's handler *accepts*, e.g. a
   real Mifare Ultralight-C), or by catching the card mid-handling without the
   scan-vs-poll contention. Lower priority now that the read path is understood.
-- **`0x10` Reset subcmds.** Wiki: `2` restart app, `3` reboot, `4` poweroff,
-  `33–36` reset SAM 1–4. We know a reset wedges the reader (power-cycle to
-  recover), so these stay untested — avoid `3`/`4` on a unit you can't
-  physically power-cycle.
+- **`0x10` Reset subcmds — `2` tested, clean.** `0x10 02` (restart application)
+  is a **clean software restart**: `0x11` ResetReply, then an Abort + INIT log,
+  then `0x0F` Startup at ~6 s, serial link preserved, scanning resumes. This is
+  the software recovery for the sleep-lock (`pm3.py cvend-restart`) and corrects
+  our earlier "0x10 wedges" note — a *bare* `0x10` (no subcode) wedges, but the
+  subcode-2 form is clean. Subcodes `3` reboot / `4` poweroff and `33–36` SAM
+  reset remain untested; avoid `4` (poweroff needs a physical power cycle).
 
 ## Bonus finding: driving nx in service, headless
 

@@ -88,8 +88,10 @@ Recipe (what `tap_demo.py` and `pm3.py cvend-watch` do):
 
 Verified continuous: 74 reads of 5 different cards streaming from 55 s to 242 s of
 uptime without a gap. Start the reader loop at boot and keep the keepalive going;
-if the keepalive stops and the reader goes idle, only a power cycle wakes its scan
-again (the `0x10` soft-reset wedges it).
+if the keepalive stops and the reader goes idle, wake its scan with a software
+restart — `./pm3.py cvend-restart` (`0x10 02`), which brings it back in ~6 s
+without a power cycle. (Bare `0x10` with no subcode wedges it; always send the
+subcode.)
 
 Card event frame types the reader sends:
 
@@ -174,13 +176,15 @@ the `0x07` Heartbeat (every **3.0 s**) continues, and a `0x04` Status does *not*
 reliably wake it. This is documented FEIG behavior, not a bug. Practical rules:
 
 - Keep a keepalive going and start the reader loop near boot; don't let it idle.
-- Our reset path is weak: `0x10` soft-resets wedge it, and re-arming a slept
-  reader is not reproducible. The one deterministic recovery is a **power cycle**,
-  then wait for the `0x0F` Startup frame (~60 s) before the enable/arm handshake.
-- Avoid probing it with unknown commands when idle — that is what has twice
-  tipped it into the sleep-lock. See `reports/FEIG cVEND reader research.md` for
-  the full prevention/recovery ladder and the (documented-for-OBID, unconfirmed-
-  for-cVEND) RF on-time config angle.
+- **Software recovery exists:** `./pm3.py cvend-restart` sends `0x10 02` (restart
+  application). The reader emits `0x11` ResetReply, aborts, re-inits, and emits
+  `0x0F` Startup in ~6 s with the serial link preserved and scanning fresh — no
+  power cycle. Use this to wake a slept reader (and to get a fresh handled-scanning
+  state on demand). Only a *bare* `0x10`, or an unknown command sent while idle,
+  wedges it (that is what has twice forced a physical power cycle); the subcode
+  matters. A power cycle remains the fallback if a wedge happens.
+- See `reports/FEIG cVEND reader research.md` for the prevention/recovery ladder
+  and the (documented-for-OBID, unconfirmed-for-cVEND) RF on-time config angle.
 
 ## Display, touch, LEDs
 

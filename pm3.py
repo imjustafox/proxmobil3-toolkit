@@ -385,6 +385,22 @@ def cmd_cvend_cat(args):
     s.close()
 
 
+def cmd_cvend_restart(args):
+    """Clean software restart of the reader app via 0x10 subcode 2.
+
+    Recovers a reader that has gone to sleep (scanning stopped) WITHOUT a physical
+    power cycle: ~6 s later the reader emits 0x0F Startup and is back in its fresh
+    post-boot scanning state. Bare 0x10 (no subcode) instead wedges it -- always
+    send the subcode."""
+    s = SshSerial(CVEND_TTY)
+    print("restarting reader app (0x10 02) ...")
+    s.send(0x10, b"\x02")                 # subcode 2 = restart application
+    ok = cvend_wait_startup(s, timeout=20)
+    print("0x0F Startup seen -- reader restarted, scanning fresh"
+          if ok else "no 0x0F within 20s (rare; if unresponsive, power-cycle)")
+    s.close()
+
+
 # --- system ----------------------------------------------------------------
 
 def cmd_nx_stop(args):
@@ -442,6 +458,7 @@ def main():
                    help="reset the reader (0x10) and wait for its 0x0F startup, then enable (reliable cold arm)")
     p.set_defaults(fn=cmd_cvend_watch)
 
+    sp.add_parser("cvend-restart", help="clean software restart of the reader app (0x10 02); wakes a slept reader").set_defaults(fn=cmd_cvend_restart)
     p = sp.add_parser("cvend-ls", help="list a directory on the reader's own filesystem (0xA4)")
     p.add_argument("path")
     p.set_defaults(fn=cmd_cvend_ls)
