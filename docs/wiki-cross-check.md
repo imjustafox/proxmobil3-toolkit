@@ -65,20 +65,66 @@ documented; we add the runtime fact that it's inert without an EMV config.
 Incidental: this confirms the FEIG firmware uses the EMVCo L2 entry-point kernel
 (`emvco_ep_configure` / `emvco_ep_preprocess`, `EmvReader.cpp`).
 
-## Pending — needs specific hardware
+## Driving tags with a Flipper Zero (works)
 
-- **`0x32` CardRelease / `0x46` AbortCardHandling.** Wiki documents these with no
-  payload; reply is `0xB3` ISOCardReleased. Directly relevant to the "same card
-  only reads once until removed" behavior — releasing the card may let the base
-  scan re-report it on a second tap without physically lifting it. Testable with
-  any card in the field.
-- **`0xD4` UltralightCommand.** Read `02 <start_page> <num_pages>`, Write
-  `03 <page> <4 bytes>`, Authenticate `04/05/06`, Abort `07`; reply `0xD5`
-  `[subcmd][status][payload]`, status `00` ok / `01` op error (no card) / `02`
-  bad params. Needs a MIFARE Ultralight-family tag — an **amiibo (NTAG215)** or a
-  **Flipper Zero** emulating one. Our ORCA/DESFire cards won't answer Ultralight
-  commands.
+A Flipper Zero in front of the reader is a programmable ISO14443A tag source —
+useful because our only physical cards are DESFire/EMV. Drive it from its USB
+CLI (`/dev/cu.usbmodemflip_*`, raw serial, prompt `>: `):
+
+- `storage list /ext/nfc` / `storage read /ext/nfc/<f>.nfc` — list and inspect
+  saved tags; the header's `Device type:` tells you the family (e.g.
+  `RickRoll.nfc` is an **NTAG216**, Ultralight-family; `Orca.nfc` is DESFire;
+  `NFCU_5405.nfc` is actually an EMV bank card, not Ultralight).
+- `loader open NFC /ext/nfc/<f>.nfc` then `input send ok short` — load a saved
+  tag and start emulating it.
+- **Don't `loader close` while it is actively emulating — it crashes/reboots the
+  Flipper.** Back out with `input send back short` first, or just leave it.
+
+**Confirmed:** emulating the NTAG216, the PM3 base scan read its UID
+`04 85 92 8A A0 61 81` straight off a `0xBE` frame. So Flipper-emulated tags are
+a valid input to everything in `INTERFACE.md`'s NFC section. Use the PM3 reader
+itself as the feedback loop — if it reports the emulated UID, emulation is live.
+
+## `0xD4` UltralightCommand (tested 2026-11-19)
+
+**Wiki:** Read `02 <start_page> <num_pages>`, Write `03 <page> <4 bytes>`,
+Authenticate `04/05/06`, Abort `07`; reply `0xD5` `[subcmd][status][payload]`,
+status `00` ok / `01` op error (no card) / `02` bad params. Tested against a
+Flipper emulating an NTAG216 (Ultralight-family) in the field.
+
+**Result:** the command is reachable and well-formed — every `0xD4` gets a
+`0xD5 [02][status]` reply — but **status was `01` (no card) in every mode we
+tried**, including 1261 rapid-fire reads. Root cause: `0xD4` operates on a
+*selected/activated* card, and nothing we drove left a card selected:
+
+- **Keyless base scan** (the standalone UID recipe): detects the tag, emits
+  `0xBE` UnhandledCard, then immediately **releases** it (it's "unhandled"
+  because no handler owns its type). Firing `0xD4` the instant a `0xBE` arrives
+  is already too late — the card is gone.
+- **Enable the UltralightC handler** (`0xE4 00 0a 01 01` → `0xE5 000a0000`, log
+  `Enabling prox handler 'ProxCardUltralightC' [ProxCardCtrl.cpp:110]`) and run
+  the full init through the cert read to `INITIALIZED`: this **stops** the
+  autonomous base scan and does **not** start handled-card polling — the reader
+  then detects nothing at all (no `0xBE`/`0xD5`), even for a card that enters the
+  field fresh after init. So `0xD4` still sees no card.
+
+**Takeaway:** enabling a handler + reaching `INITIALIZED` is necessary but not
+sufficient to make the reader *hold* a card for host commands; nx evidently does
+more to start handled-card polling. The clean next step is to **LD_PRELOAD-sniff
+nx while it actually handles a card** (drive it in service via `keyserver/`, tap
+a card, capture the exact frames between `INITIALIZED` and the card-read) — that
+will reveal the missing "start polling / select-and-hold" step, after which
+`0xD4` and `0x32` become testable. See `docs/reversing-nx.md` for the sniffer.
+
+## Pending
+
+- **`0x32` CardRelease / `0x46` AbortCardHandling.** Wiki: no payload, reply
+  `0xB3` ISOCardReleased. Blocked on the same gap as `0xD4` — needs the reader
+  holding a card. Revisit after the nx handled-card sniff above. Relevant to the
+  "same card only reads once until removed" behavior.
+- **`0xD4` Write/Authenticate.** Once a card can be held, test Write (`03`) and
+  the Authenticate variants (`04/05/06`) against a writable NTAG.
 - **`0x10` Reset subcmds.** Wiki: `2` restart app, `3` reboot, `4` poweroff,
-  `33–36` reset SAM 1–4. We already know a reset wedges the reader (power-cycle
-  to recover), so these stay untested unless there's a reason — avoid `3`/`4` on
-  a unit you can't physically power-cycle.
+  `33–36` reset SAM 1–4. We know a reset wedges the reader (power-cycle to
+  recover), so these stay untested — avoid `3`/`4` on a unit you can't
+  physically power-cycle.
