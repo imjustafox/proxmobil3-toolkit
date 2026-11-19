@@ -4,7 +4,7 @@ The PROXmobil3 is really **two computers**: the FEIG cVEND reader (its own ARM +
 Buildroot, documented in `docs/feig-firmware.md`), and the **host** — an NXP
 i.MX6 Solo running INIT's PTXdist Linux, which drives the screen, talks to the
 reader and the PIC32 over serial, and runs the transit application. This document
-covers the host software top to bottom. The hardware/peripherals are in
+covers the host software. The hardware/peripherals are in
 `INTERFACE.md`; the stock UI app's RE techniques are in `docs/reversing-nx.md`;
 here the focus is the system layout and the **account-based-ticketing (ABT)
 backend client**, which is the host's most substantial piece.
@@ -302,7 +302,62 @@ have **root SSH**, and the shell's powers (`extshell`, the `load*` flashers,
 as root or need assets we lack (e.g. `sc.hex`). (A DESFire maintenance-card path,
 `NxProxFileConfigDesfireMaintenance`, also exists but likewise needs operator keys.)
 
-## 7. Cross-references
+## 7. Fare media, barcodes, the GUI, and the rootfs
+
+### Fare-media types and the validation flow
+
+The device validates several media, all funneled into the same UVAPI/denylist
+decision (§3):
+
+- **Contactless cards** — UID/token read by the reader (DESFire etc.), decrypted
+  with the synced keys (`ProxyDecryption`/`ProxyKeysMapper`, which also runs
+  `MapUvapiKeysToInit`).
+- **Barcodes (three kinds)** — `proxy_server` extracts a media ID per type:
+  `GetMediaIDFromTVMBarcode` (ticket-vending-machine tickets),
+  `GetMediaIDFromMobileTicketingBarcode` (phone tickets), and
+  `GetMediaIDFromAccountBasedFareMediaBarcode`. On the nx side these are **Aztec
+  2D** symbols (the VDV/UIC e-ticket style — `aztec` encoder with ASN.1 "sysfields",
+  `barcodeValidityPeriod`/`beginOfBarcodeValidity`) read through the `ttyUSB0`
+  barcode scanner.
+
+Each tap/scan becomes an "init request" that `ProxyClient::MapInitRequestToUvapiRequest`
+turns into a **UVAPI** request (JSON, jsoncpp), sent to `validate_now` with an
+OAuth2 bearer; `ParseUvapiResponse`/`ProcessUvapiResponse` yield the decision.
+Offline, the `flash_deny_list` (populated `FromUVAPI` or `FromFile`) plus
+`Passback` (anti-passback) decide locally, and the tap is queued (§3). So the
+back-office contract is media-agnostic: card or barcode, it resolves to a media ID
+and a UVAPI validation.
+
+### VDV-KA (German e-ticket) data model
+
+nx's `ticketing/vdvka` is a full VDV-KA / (((eTicket implementation, ASN.1/OID
+based (`_oidArrayToRaw`/`_oidArrayToText`, the `appl/asn1c` codec). It keeps a
+**key registry** and an **application logbook** (`NxVdvkaNm::_keyRegAddKeys`/
+`_keyRegAddRef`/`_keyRegClear`/`_keyRegRemove`, `_logbookClear`), and a VDV-KA
+**Terminal ID** set with `setid <type> <number> <orgId>`. Entitlements (EFS) live
+on DESFire and are MAC'd through the SAM (the reader's `ProxCardVdvKa`/SAM side,
+`docs/feig-firmware.md`). Dormant on our US/CapMetro unit but fully present.
+
+### GUI (`gui.xml`)
+
+The screen is a declarative XML UI: **~41 `<page>` elements**, each a tree of
+positioned `<label>`/`<text>`/`<components>` with `<font>`/`<foreground>`/
+`<pos>`/`<size>`/`<alignment>`, `%GUI_…%` localization keys (e.g.
+`%GUI_OutOfService%`), and `<link>`/`<ref>` for navigation between pages. It's
+rendered straight to `/dev/fb0` (800×480, no touch — `INTERFACE.md`); input is
+NFC taps, barcode scans, and the power button.
+
+### Rootfs (`/`, read-only ext4 on `sda1`)
+
+**PTXdist 2019.03.1** (`/etc/os-release` `ID=ptxdist`). A conventional embedded
+userland: BusyBox, systemd, `ssh`/`sshd`/`ssh-keygen` (our access), `curl`
+(abtproxy's HTTP), ALSA (`alsactl`/`alsamixer`), **GStreamer** (`gst-*`, the audio
+pipeline), **avahi-daemon** (the mDNS/IBIS-IP advertiser, §6), `i2c-tools`
+(`i2cdetect`/`i2cget`/…), and `gdbserver` (on-device remote debugging is possible).
+No stripped-out surprises — the custom parts are all under `/init` (`efad`=nx,
+`abtproxy`), not the base rootfs.
+
+## 8. Cross-references
 
 - Hardware, peripherals (PIC32, barcode, audio, framebuffer, networking, the
   dongle EEPROM): `INTERFACE.md`.

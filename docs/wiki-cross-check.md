@@ -311,7 +311,7 @@ select-and-hold gap above.
 
 ## Bonus finding: driving nx in service, headless
 
-The `keyserver/` + sniffer path now works end to end and is worth recording: run
+The `keyserver/` + sniffer path now works end to end: run
 `keyserve` as a **durable** process (`systemd-run --unit=keyserve --collect
 /init/keyserve` — a bare `&`/`setsid` from an ssh command does **not** survive),
 preload the sniffer via an `nx.service.d` drop-in, and start nx. nx fetches keys

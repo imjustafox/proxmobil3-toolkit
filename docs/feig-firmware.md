@@ -63,8 +63,8 @@ opcodes `0xBA`/`0xCE`/`0xE6`/`0xEA` as real registered handlers.
   polling thread (`_pollCards`/`_waitForCard`/`isPolling`/`_stopPolling`), finds a
   card (`_foundCard`/`_cardFound`), tracks the technology (`_tech`/`_techData`,
   `selectProtocol`), resets/surrenders cards (`resetCard`/`_resetCard`/`_surrender`),
-  and crucially exposes **`enableDesfireNativeMode`** — the switch that lets the
-  host talk native DESFire (what `0xBC` rides on). `Picc::_identify` is the
+  and exposes **`enableDesfireNativeMode`**, the switch that lets the host talk
+  native DESFire (what `0xBC` rides on). `Picc::_identify` is the
   per-card identification.
 - **`ProxCardCtrl`** is the multi-application orchestrator. `addProxHandler`
   registers a scheme handler; **`enableProxHandler`/`disableProxHandler`** are what
@@ -122,7 +122,7 @@ Legacy — girogo was wound down ~2020–2025 — but fully present in firmware.
 
 ## 5. ITSO (`ItsoIppHandler` + the `ITSO*` family, opcodes `0xAC`/`0xAE`)
 
-A full implementation of the UK ITSO ticketing spec, by far the largest subsystem.
+A full implementation of the UK ITSO ticketing spec, and the largest subsystem.
 
 - **Transport:** `ItsoIppHandler::_handleItsoDataReq` (`0xAC`) and
   `_handleItsoCtrlReq` (`0xAE`); `ProxCardItso` drives a card through an **ISAM**
