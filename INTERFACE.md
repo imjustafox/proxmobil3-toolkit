@@ -302,11 +302,15 @@ where nx has already played.
 > codec MCLK), AUDMUX routing, and the SSI1 config; the SSI transmits valid I²S with
 > real samples in both. Yet one is silent and one plays, and the working state
 > persists only until reboot. So the gate is some state nx's *playback* leaves behind
-> that none of those views expose — either a codec register written over **raw i²C**
-> (which the kernel's caching regmap would not reflect, so a regmap dump can't rule
-> the codec out) or SDMA/driver-init state. The lead now is **reverse-engineering
-> what the nx audio path (GStreamer-based) writes**; `PROCESS.md` tracks it. Until
-> it's pinned, the reliable path is: **let nx play once, then stop it.**
+> that none of those views expose (a regmap dump reads the driver's cache, not the
+> silicon, so it can't even rule the codec out). nx plays through its own
+> **libasound/ALSA** path (`NxLowAudioAlsa`/`NxAudioPlaybackImp`), **not GStreamer**,
+> and its binary shows no `snd_mixer`, `/dev/i2c` or `/dev/mem` access — so it is not
+> obviously doing anything a plain `aplay` doesn't, which is what makes this stubborn.
+> The decisive next step is a **dynamic trace** — an `LD_PRELOAD` shim over the
+> ALSA/`ioctl`/`open` calls (like `sniffer/`) while nx plays on a live unit;
+> `PROCESS.md` tracks it. Until it's pinned, the reliable path is: **let nx play
+> once, then stop it.**
 
 ## Barcode scanner
 
