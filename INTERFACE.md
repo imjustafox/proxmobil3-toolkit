@@ -307,11 +307,14 @@ where nx has already played.
 > **libasound/ALSA** path (`NxLowAudioAlsa`/`NxAudioPlaybackImp`), **not GStreamer**,
 > and its binary shows no `snd_mixer`, `/dev/i2c` or `/dev/mem` access — so it is not
 > obviously doing anything a plain `aplay` doesn't, which is what makes this stubborn.
-> The decisive next step is a **dynamic trace** — `sniffer/audiotrace.c` (built,
-> staged as `sniffer/audiotrace.so`) is an `LD_PRELOAD` shim that logs every
-> `open`/`openat` path and every `ioctl` on an audio/i²c/mem/sys fd; run nx under it,
-> tap once, and diff against the same shim over a cold `aplay` — the extra device or
-> ioctl is the gate. `PROCESS.md` tracks it. Until it's pinned, the reliable path is: **let nx play
+> A dynamic trace (`sniffer/audiotrace.c`, an `LD_PRELOAD` shim) of nx vs a cold
+> `aplay` came back **negative**: nx opens no `i²c`/`mem`/`gpio`/`clk`, writes **no**
+> mixer control (only read-only control enumeration for its volume UI), and uses the
+> **same** `default`→dmix→`hw:0` sink at the same 48 kHz/16-bit/stereo as `aplay`. So
+> there is no userspace poke to replay — the differentiator is **below the syscall
+> layer**: ALSA/dmix instance state, or analog settling on the first post-boot
+> stream. Open isolation steps: a cold `aplay -D hw:0` / `plughw:0` (bypass dmix) and
+> a long sustained cold stream (warm-up test). `PROCESS.md` tracks it. Until it's pinned, the reliable path is: **let nx play
 > once, then stop it.**
 
 ## Barcode scanner
