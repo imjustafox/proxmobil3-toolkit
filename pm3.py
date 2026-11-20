@@ -450,14 +450,15 @@ def cmd_cvend_restart(args):
 
 # --- audio (ALSA speaker) --------------------------------------------------
 # The grille speakers are on the TLV320AIC32x4 Line-Out, ALSA card 0 "PM3 Audio".
-# PREREQUISITE (verified): the Line-Out drivers sit behind a DAPM "Line Out"
-# endpoint that has no ALSA control -- only nx enables it, and only once nx has
-# actually PLAYED a sound this boot (e.g. a card tap on the stock UI). That enable
-# then persists after nx stops. So on a pure dongle boot where nx never ran, this
-# plays with no error but is SILENT. To use the speaker: boot stock (or start nx
-# and let it play a tap tone) once, then ./pm3.py nx-stop and play here. The proper
-# nx-free fix is a device-side driver/DT change (force-enable the pin); see
-# INTERFACE.md. The piezo buzzer (beep) is separate hardware and always works.
+# PREREQUISITE (verified): the speaker only produces sound once nx has PLAYED audio
+# once this boot (e.g. a card tap on the stock UI). After that, playback here works
+# with nx stopped and persists until reboot. On a pure dongle boot where nx never
+# ran, this plays with no error but is SILENT. The cause is a state nx's playback
+# leaves behind that is invisible to every readable register (codec, DAPM, clocks
+# incl. the 24 MHz MCLK, AUDMUX, SSI) -- downstream of the codec; still being chased
+# by reverse-engineering nx (see PROCESS.md), not assumed to need a kernel change.
+# For now: boot stock (or start nx and let it tone once), then ./pm3.py nx-stop and
+# play here. The piezo buzzer (beep) is separate hardware and always works.
 
 def cmd_play(args):
     if not os.path.isfile(args.file):
