@@ -307,9 +307,11 @@ where nx has already played.
 > **libasound/ALSA** path (`NxLowAudioAlsa`/`NxAudioPlaybackImp`), **not GStreamer**,
 > and its binary shows no `snd_mixer`, `/dev/i2c` or `/dev/mem` access — so it is not
 > obviously doing anything a plain `aplay` doesn't, which is what makes this stubborn.
-> The decisive next step is a **dynamic trace** — an `LD_PRELOAD` shim over the
-> ALSA/`ioctl`/`open` calls (like `sniffer/`) while nx plays on a live unit;
-> `PROCESS.md` tracks it. Until it's pinned, the reliable path is: **let nx play
+> The decisive next step is a **dynamic trace** — `sniffer/audiotrace.c` (built,
+> staged as `sniffer/audiotrace.so`) is an `LD_PRELOAD` shim that logs every
+> `open`/`openat` path and every `ioctl` on an audio/i²c/mem/sys fd; run nx under it,
+> tap once, and diff against the same shim over a cold `aplay` — the extra device or
+> ioctl is the gate. `PROCESS.md` tracks it. Until it's pinned, the reliable path is: **let nx play
 > once, then stop it.**
 
 ## Barcode scanner
