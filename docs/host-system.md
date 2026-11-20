@@ -409,7 +409,52 @@ pipeline), **avahi-daemon** (the mDNS/IBIS-IP advertiser, §6), `i2c-tools`
 No stripped-out surprises — the custom parts are all under `/init` (`efad`=nx,
 `abtproxy`), not the base rootfs.
 
-## 8. Cross-references
+## 8. The `.p72` parameter dataset format
+
+nx's per-operator configuration — fare parameters, ISI setup, texts, sounds —
+ships as a **`.p72` dataset**: a standard **ZIP** of INIT "KArch" text config files,
+provisioned through the IMS queues (§3; `ims/toveh/PROXmobil_72`, per data domain)
+and loaded by `NxDataProvisionService`/`NxParamService`. On this unit, e.g.
+`F20240607_V0045.p72` under `/init/efad/data/archive/`.
+
+**Container:** a normal ZIP (deflate). Integrity is the ZIP's own **per-file
+CRC32** (what `nixe.ini`'s `CK-crc32` checks) — there is **no signature**, so a
+dataset can be authored or edited with ordinary zip tools.
+
+**Each `.dat` is structured ASCII** (CRLF): a `[Section]` header, an optional
+`#!rows=N`, a typed column schema (`NAME:S` string / `NAME:N` number), then
+tab-separated rows. Files and roles:
+
+| File | Role |
+|---|---|
+| `arcinfo.dat` | manifest — `DevClass 72` (the PM3), `DataDomain`, `ValidFrom`, `BaseVersion`/`UpdateVersion`, `CreationTime` |
+| `NxParam.dat` | the parameter table — `FZG:N MPN:N PARAM:N WERT:S` (vehicle / mpn / **param number** / value; `-1 -1` = global). The `param:NNNNN` store |
+| `ISIITEMS.dat` | the ISI item definitions — `ITEM FLAG SHAREDNAME …`, each mapped to an internal shared variable. The full `IsiGet`/`IsiRegister` vocabulary |
+| `ISIAPP.dat` | the ISI permission table — `APPNAME COMMAND …`: the authorized client AppNames (`BYTEMARK`, `COPILOTpcSrv`) and the exact ISI requests each may issue |
+| `httpprofile.dat` | outbound HTTP client profiles (e.g. `BmtkAbtProxy` → `127.0.0.1`, timeouts, headers) |
+| `TFKEYS.DAT` | TF (key-sequence) function codes — `TFNR→TFKEY` (e.g. `10103→tfShowSoftwareVersion`); the service-function map, not passwords |
+| `text.dat` | localization strings (the `%GUI_…%` texts, fare labels) |
+| `ProxOk/Warn/Failure.wav` | the tap-result audio prompts |
+| `ImsConf.dat`, `logconf.dat`, `VK.DAT` | IMS, logging, and VDV-KA config |
+
+This ties the interface findings (§6) together and makes them actionable:
+
+- **ISI items (#1)** are exactly `ISIITEMS.dat`.
+- **ISI write/command gating (#2)** is `ISIAPP.dat`: only the listed AppNames
+  (`BYTEMARK`/`COPILOTpcSrv`) may write/execute, each with a command whitelist.
+  (`BYTEMARK` subscribes `FareClasses`/passback items — the ABT backend and nx
+  exchange fare/passback state over ISI.)
+- **Enabling a dormant interface (#3)** is an `NxParam.dat` edit: add the service's
+  port/enable `PARAM` row (the param number is defined in the nx binary) and
+  re-provision.
+
+Because the dataset is text and unsigned, a custom `.p72` can reconfigure nx
+wholesale — add an AppName to `ISIAPP.dat` for ISI write access, set a service
+param in `NxParam.dat`, change parameters — then drop it in `ims/toveh` for
+`NxDataProvisionService` to pick up (CRC32 is the only gate). The operator's
+specific parameter values are their config and are not reproduced here.
+
+## 9. Cross-references
 
 - Hardware, peripherals (PIC32, barcode, audio, framebuffer, networking, the
   dongle EEPROM): `INTERFACE.md`.
