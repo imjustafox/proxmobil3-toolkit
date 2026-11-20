@@ -122,7 +122,14 @@ once a second, just listen, and it streams a UID frame for every card, indefinit
   codec PLL repointed to BCLK. So the gate is a state nx's playback leaves behind that
   none of those expose — downstream of the codec (SDMA / driver-private / timing) — and
   the way to pin it is to reverse-engineer what nx's audio path actually does, not to
-  assume a kernel change. Open as of this writing. Lesson: distinguish "needs the
+  assume a kernel change. A later round of cold-boot tests (verified cold, nx never
+  started) tightened this: a raw `aplay -D hw:0` is *silent* too, so dmix is exonerated;
+  a `default` play right after it is still silent, so merely streaming the device does
+  not prime the gate; and a 30 s sustained cold stream is silent throughout, so there is
+  no analog soft-start. The differentiator is thus nx's *specific* first playback at the
+  driver/analog level — not the stream path or params any userspace `aplay` can drive —
+  which means no host-side workaround, only reverse-engineering nx. Open as of this
+  writing. Lesson: distinguish "needs the
   firmware running now" from "needs a setup step the firmware happens to do," *and*
   re-test from a clean boot (nx never started) before declaring a subsystem
   firmware-independent — "works after I stop nx" is not the same as "works when nx never

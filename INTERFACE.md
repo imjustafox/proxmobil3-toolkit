@@ -89,7 +89,7 @@ Recipe (what `tap_demo.py` and `pm3.py cvend-watch` do):
    `type == 0xBE`, not on "a `0x04` byte appeared"** — the `0xD1` status and `0xED`
    log frames the reader also streams contain `0x04` bytes too, and anchoring on the
    byte instead of the frame type yields phantom "card" reads (a bug we hit and
-   fixed in transit-sim's read loop).
+   fixed).
 
 Verified continuous: 74 reads of 5 different cards streaming from 55 s to 242 s of
 uptime without a gap. Start the reader loop at boot and keep the keepalive going;
@@ -119,8 +119,7 @@ consortium's DESFire keys, which this unit doesn't hold; the reader logs
 (`ATQA 0x0344` / `SAK 0x20`). Without the keys there is nothing to distinguish one
 card, or one agency, from another except the **UID itself** (and its OUI-like
 prefix). So any "act like the ORCA reader for ORCA cards, the Peggo reader for Peggo
-cards" behaviour has to be driven by a UID allow-list, not by card type — that is
-exactly how transit-sim's per-card rules work. The one easy outlier: a hotel room
+cards" behaviour has to be driven by a UID allow-list, not by card type. The one easy outlier: a hotel room
 key (e.g. a Marriott key) is a **MIFARE Ultralight** (`ATQA 0x0044` / `SAK 0x00`), a
 different type, so *that* is distinguishable without any UID list.
 
@@ -292,9 +291,6 @@ amixer -c 0 sset PCM 65%
 scp -O tone.wav root@<ip>:/tmp/ && ssh root@<ip> aplay /tmp/tone.wav   # file, not a pipe
 ```
 
-The transit-sim agent (`agent/pm3hw.py`, separate repo) does exactly this, on a unit
-where nx has already played.
-
 > **Why the prerequisite (open).** This was chased hard on the live unit. Between a
 > *silent* cold-boot playback and a *working* post-nx playback, **everything readable
 > from the kernel is identical** — codec registers (regmap view, pages 0–1), DAPM
@@ -313,9 +309,19 @@ where nx has already played.
 > **same** `default`→dmix→`hw:0` sink at the same 48 kHz/16-bit/stereo as `aplay`. So
 > there is no userspace poke to replay — the differentiator is **below the syscall
 > layer**: ALSA/dmix instance state, or analog settling on the first post-boot
-> stream. Open isolation steps: a cold `aplay -D hw:0` / `plughw:0` (bypass dmix) and
-> a long sustained cold stream (warm-up test). `PROCESS.md` tracks it. Until it's pinned, the reliable path is: **let nx play
-> once, then stop it.**
+> stream. The cold-boot isolation tests have now been run (verified cold, nx never
+> started) and all came back **silent**, which narrows it further: a raw `aplay -D
+> hw:0` (dmix fully bypassed) is silent, so **dmix is exonerated**; a `default`
+> playback immediately after that stream is still silent, so **streaming the device
+> does not prime the gate** ("any playback flips it" is false); and a **30 s sustained**
+> cold stream is silent throughout, so there is **no analog soft-start** from
+> continuous clocking. The gate is therefore something nx's *specific* first playback
+> does at the driver/analog level that ordinary ALSA streaming — raw, mixed, or
+> sustained — does not reproduce, so there is **no host-side fix** (no `plughw:0`, no
+> boot warm-up stream). The remaining instrument is a `SNDRV_PCM_IOCTL_HW_PARAMS`/
+> `SW_PARAMS` dump from the shim to diff nx's first playback against these cold
+> streams. `PROCESS.md` tracks it. Until it's pinned, the reliable path is: **let nx
+> play once, then stop it.**
 
 ## Barcode scanner
 
