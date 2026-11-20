@@ -173,8 +173,6 @@ def decode_value(kind, raw: bytes):
     # ValueReadReply = key16 echo + value (big-endian). Strings carry a u16
     # length then NUL-separated fields. Verified on hardware.
     val = raw[2:]
-    if kind == "?" and raw[:1] in (b"\xc0", b"\xd0"):  # c0xx/d0xx are strings
-        kind = "str"
     if kind == "str":
         return " | ".join(p.decode(errors="replace").strip() for p in val[2:].split(b"\0") if p)
     return int.from_bytes(val, "big")
@@ -232,7 +230,10 @@ def cmd_beep(args):
 
 
 def _find_uid(d: bytes):
-    """Find a 7-byte ISO14443A UID (NXP cards start with 0x04) in a payload."""
+    """Find a 7-byte ISO14443A UID in a payload by its NXP prefix (0x04).
+
+    Only matches NXP UIDs (MIFARE/DESFire/Ultralight); a 7-byte UID from
+    another manufacturer, or a 4-byte UID, won't be found this way."""
     for i in range(len(d) - 6):
         if d[i] == 0x04:
             return ":".join(f"{b:02X}" for b in d[i:i + 7])
@@ -405,15 +406,30 @@ def cmd_cvend_ls(args):
 
 
 def cmd_cvend_cat(args):
+    # Read the whole file: 0x98 returns one frame per call (up to --count bytes),
+    # so loop from the offset until a short frame marks the end.
     s = SshSerial(CVEND_TTY)
-    data = cvend_getfile(s, args.path, args.offset, args.count)
+    out = bytearray()
+    offset = args.offset
+    data = cvend_getfile(s, args.path, offset, args.count)
     if data is None:
+        s.close()
         print("(no reply)")
-    elif args.hex:
-        print(data.hex())
-    else:
-        sys.stdout.buffer.write(data)
+        return
+    while data:
+        out += data
+        offset += len(data)
+        if len(data) < args.count:
+            break
+        data = cvend_getfile(s, args.path, offset, args.count)
+        if data is None:
+            print(f"(partial: no reply after {len(out)} bytes at offset {offset})", file=sys.stderr)
+            break
     s.close()
+    if args.hex:
+        print(bytes(out).hex())
+    else:
+        sys.stdout.buffer.write(bytes(out))
 
 
 def cmd_cvend_restart(args):
@@ -430,6 +446,45 @@ def cmd_cvend_restart(args):
     print("0x0F Startup seen -- reader restarted, scanning fresh"
           if ok else "no 0x0F within 20s (rare; if unresponsive, power-cycle)")
     s.close()
+
+
+# --- audio (ALSA speaker) --------------------------------------------------
+# The grille speakers are on the TLV320AIC32x4 Line-Out, ALSA card 0 "PM3 Audio".
+# PREREQUISITE (verified): the Line-Out drivers sit behind a DAPM "Line Out"
+# endpoint that has no ALSA control -- only nx enables it, and only once nx has
+# actually PLAYED a sound this boot (e.g. a card tap on the stock UI). That enable
+# then persists after nx stops. So on a pure dongle boot where nx never ran, this
+# plays with no error but is SILENT. To use the speaker: boot stock (or start nx
+# and let it play a tap tone) once, then ./pm3.py nx-stop and play here. The proper
+# nx-free fix is a device-side driver/DT change (force-enable the pin); see
+# INTERFACE.md. The piezo buzzer (beep) is separate hardware and always works.
+
+def cmd_play(args):
+    if not os.path.isfile(args.file):
+        print(f"no such file: {args.file}", file=sys.stderr)
+        sys.exit(1)
+    remote = "/tmp/pm3play-" + os.path.basename(args.file)
+    opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR"]
+    if subprocess.run(["scp", "-O", *opts, args.file, f"root@{HOST}:{remote}"]).returncode:
+        print("scp failed", file=sys.stderr)
+        sys.exit(1)
+    setup = []
+    if not args.no_restore:
+        setup.append("alsactl -f /etc/asound.state restore >/dev/null 2>&1")
+    setup.append(f"amixer -c 0 sset 'LO Driver Gain' {args.lo_gain} >/dev/null")
+    setup.append(f"amixer -c 0 sset PCM {args.pcm}% >/dev/null")
+    for m in args.mixer or []:
+        name, _, val = m.partition("=")
+        setup.append(f"amixer -c 0 sset '{name}' '{val}' >/dev/null")
+    # Show the resulting level: PCM percent is very non-linear here (0 dB is ~73%,
+    # 15% is about -50 dB / inaudible), so print the actual dB before playing.
+    setup.append("printf 'PCM level: '; amixer -c 0 sget PCM | grep -i 'playback.*dB' | head -1")
+    # aplay's own exit status is what we return; clean up the temp file either way.
+    cmd = "; ".join(setup) + f"; aplay {remote}; rc=$?; "
+    if not args.keep:
+        cmd += f"rm -f {remote}; "
+    sys.exit(ssh(cmd + "exit $rc"))
 
 
 # --- system ----------------------------------------------------------------
@@ -457,29 +512,41 @@ def cmd_info(args):
 def main():
     global HOST
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--host", default=HOST)
+    ap.add_argument("--host", default=HOST, help="unit IP or hostname (default: $PM3_HOST or %(default)s)")
     sp = ap.add_subparsers(dest="cmd", required=True)
 
-    sp.add_parser("info").set_defaults(fn=cmd_info)
+    sp.add_parser("info", help="print kernel, uptime, memory, services, and ttys").set_defaults(fn=cmd_info)
     sp.add_parser("nx-stop", help="stop stock UI + disable watchdog").set_defaults(fn=cmd_nx_stop)
-    sp.add_parser("nx-start").set_defaults(fn=cmd_nx_start)
+    sp.add_parser("nx-start", help="start the stock UI (nx) and abtproxy again").set_defaults(fn=cmd_nx_start)
 
-    p = sp.add_parser("pic-read", help="read PIC32 keys (hex); default: known keys")
-    p.add_argument("keys", nargs="*")
+    p = sp.add_parser("pic-read", help="read PIC32 keys (hex); default: all known keys")
+    p.add_argument("keys", nargs="*", help="16-bit keys in hex, e.g. 5040 c000 (see PIC_KEYS)")
     p.set_defaults(fn=cmd_pic_read)
     p = sp.add_parser("watchdog", help="set PIC32 watchdog timeout (0 = off)")
-    p.add_argument("seconds", type=int)
+    p.add_argument("seconds", type=int, help="timeout in seconds; 0 disables the watchdog")
     p.set_defaults(fn=cmd_watchdog)
-    p = sp.add_parser("pic-raw", help="send raw IPP frame to PIC32")
-    p.add_argument("type")
-    p.add_argument("data", nargs="?", default="")
+    p = sp.add_parser("pic-raw", help="send a raw IPP frame to the PIC32")
+    p.add_argument("type", help="message type byte in hex, e.g. 02")
+    p.add_argument("data", nargs="?", default="", help="payload as hex, e.g. 5040 (default: none)")
     p.set_defaults(fn=cmd_pic_raw)
 
-    sp.add_parser("cvend-version").set_defaults(fn=cmd_cvend_version)
-    p = sp.add_parser("beep")
-    p.add_argument("--freq", type=int, default=2000)
-    p.add_argument("--ms", type=int, default=200)
+    sp.add_parser("cvend-version", help="print the cVEND reader firmware version").set_defaults(fn=cmd_cvend_version)
+    p = sp.add_parser("beep", help="sound the cVEND piezo buzzer")
+    p.add_argument("--freq", type=int, default=2000, help="frequency in Hz (default 2000; ~2700 is loudest)")
+    p.add_argument("--ms", type=int, default=200, help="duration in milliseconds (default 200)")
     p.set_defaults(fn=cmd_beep)
+    p = sp.add_parser("play", help="play a WAV through the Line-Out speaker (needs nx to have played a sound this boot; see INTERFACE.md)")
+    p.add_argument("file", help="local .wav file (copied to the unit, then aplay'd)")
+    p.add_argument("--pcm", type=int, default=65,
+                   help="PCM volume percent (default 65; non-linear: ~73%% = 0 dB, 15%% is near silent)")
+    p.add_argument("--lo-gain", type=int, default=6,
+                   help="LO Driver Gain 0-35 (default 6 = 0 dB baseline; raise PCM for volume)")
+    p.add_argument("--no-restore", action="store_true",
+                   help="skip 'alsactl restore' of the stock output routing")
+    p.add_argument("--keep", action="store_true", help="leave the uploaded file on the unit")
+    p.add_argument("--mixer", action="append", metavar="NAME=VAL",
+                   help="extra amixer control, e.g. --mixer 'HP Driver Gain=6' (repeatable)")
+    p.set_defaults(fn=cmd_play)
     p = sp.add_parser("cvend-watch", help="enable card types and dump reader events")
     p.add_argument("--enable", nargs="*", default=list(CARD_FUNCS), choices=list(CARD_FUNCS))
     p.add_argument("-v", "--verbose", action="store_true")
@@ -494,9 +561,10 @@ def main():
     p.add_argument("path")
     p.set_defaults(fn=cmd_cvend_ls)
     p = sp.add_parser("cvend-cat", help="read a file from the reader's own filesystem (0x98)")
-    p.add_argument("path")
-    p.add_argument("--offset", type=int, default=0)
-    p.add_argument("--count", type=lambda x: int(x, 0), default=0xF000)
+    p.add_argument("path", help="absolute path on the reader, e.g. /home/app0/config")
+    p.add_argument("--offset", type=int, default=0, help="start reading at this byte offset (default 0)")
+    p.add_argument("--count", type=lambda x: int(x, 0), default=0xF000,
+                   help="bytes per frame; the file is read in chunks of this size (default 0xF000)")
     p.add_argument("--hex", action="store_true", help="print hex instead of raw bytes")
     p.set_defaults(fn=cmd_cvend_cat)
     p = sp.add_parser("cvend-finfo", help="file size + CRC32 from the reader's filesystem (0x9C)")
