@@ -104,16 +104,21 @@ once a second, just listen, and it streams a UID frame for every card, indefinit
 - **The simplest explanation was right, and we reached it last.** The reader just
   scans and pushes; everything clever we tried (re-init, arming, key-server) was
   working against that, not with it.
-- **"Needs the stock firmware" is a recurring false conclusion — chase the silent
-  failure instead.** The speaker played nothing with nx stopped, so we concluded it
-  "needs nx's init." It didn't: two independent silent-failure traps were stacked —
-  piping into `aplay` (stdin) produces no sound on this device where a file plays
-  fine, and a fresh boot leaves the codec's output routing unconfigured until
-  `alsactl -f /etc/asound.state restore`. With a file and a routing restore the
-  speaker works nx-free, and the codec registers match what nx sets — nx was never
-  the missing piece. Same shape as the reader: when a subsystem only works "under the
-  stock firmware," suspect a setup step the firmware does quietly, not the firmware
-  itself.
+- **"Needs the stock firmware" vs "needs a setup step the firmware does" — and
+  verify from a genuinely cold state before you call it.** The speaker played nothing
+  with nx stopped, so the first conclusion was "needs nx's init." Two silent-failure
+  traps turned out to be stacked and *not* about nx: piping into `aplay` (stdin)
+  produces no sound on this device where a file plays fine, and the output routing
+  needs `alsactl -f /etc/asound.state restore`. Fixing those got sound with nx
+  stopped — so we declared it nx-free. That was premature: a second pass (a peer who
+  couldn't reproduce from a true cold boot) showed the LOL/LOR output *drivers* only
+  come up because nx had run earlier that boot and powered the codec's DAPM "Line
+  Out" endpoint — a thing with no mixer control, so `alsactl` can't set it. The
+  recipe had been validated on a unit where nx ran then stopped, which hid the
+  dependency. Lesson: distinguish "needs the firmware running now" from "needs a
+  setup step the firmware happens to do," *and* re-test from a clean boot (nx never
+  started) before declaring a subsystem firmware-independent — "works after I stop
+  nx" is not the same as "works when nx never ran."
 - **Watch the real hardware.** The screen going from OUT OF SERVICE to SCAN/TAP, a
   beep on a tap, an LED blink — those physical signals repeatedly settled questions
   that the logs alone left ambiguous.

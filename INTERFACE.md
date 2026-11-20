@@ -265,10 +265,8 @@ TLV320AIC32x4 codec (I²C bus 0 @ 0x18, fed over SSI), exposed as ALSA card 0
 "PM3 Audio". There's a capture path too (Mic PGA / ADC). The piezo buzzer above is
 separate hardware — the ALSA mixer does not affect it, and vice versa.
 
-The speaker works with **nx stopped and no nx involvement at all** — but two
-non-obvious things have to be right, and missing either one gives *silence with no
-error*, which is what led to an earlier (wrong) "the speaker needs nx's init"
-conclusion:
+The speaker works with **nx stopped** — but two non-obvious things have to be right,
+and missing either one gives *silence with no error*:
 
 1. **Restore the output routing first.** On a fresh boot without nx the DAC powers
    up but the output drivers and Line-Out routing are not configured, so nothing
@@ -294,9 +292,25 @@ scp -O tone.wav root@<ip>:/tmp/ && ssh root@<ip> aplay /tmp/tone.wav   # file, n
 
 During working playback the codec registers (i2c 0-0018) read `0x3f=d4` (DAC
 powered), `0x40=00` (DAC unmuted — the default is `0x0c`, muted), and `0x89=3c`
-(output drivers on); these are the same values nx produces, confirming nx adds
-nothing the two steps above don't. The transit-sim agent (`agent/pm3hw.py`,
-separate repo) does exactly this on a stopped-nx unit.
+(LOL/LOR output drivers powered). The transit-sim agent (`agent/pm3hw.py`, separate
+repo) does exactly this.
+
+> **Cold-boot caveat (open issue).** The two steps above were verified on a unit
+> where **nx had started this boot and was then stopped** — which is what every
+> working path does (transit-sim's agent and `deploy/autorun.sh` both run
+> `systemctl stop nx` first). On a *true* cold boot where **nx never ran** (the
+> dongle `autorun.sh` path), the LOL/LOR output drivers can stay unpowered
+> (`0x89` reads `0x0c`, driver bits `0x30` clear) and you get silence even with the
+> routing restored and a file playing — the DAC powers from the stream but the
+> Line-Out driver never comes up. Cause: this is a `simple-audio-card` ("PM3 Audio",
+> DT `sound` node) with a DAPM **"Line Out"** endpoint routed to `LOL`/`LOR`, and
+> the output-driver power is **DAPM-managed — there is no mixer control for it**, so
+> `/etc/asound.state` / `alsactl restore` (which `alsa-restore.service` already runs
+> at boot) can never set `0x89`. nx powers the endpoint as a side effect of its
+> GStreamer playback; the bare `alsactl` + `aplay` recipe does not replicate that
+> from cold. Making `pm3.py play` work on a never-ran-nx boot (force-enabling the
+> DAPM Line-Out pin) is under active investigation — until it's solved, the reliable
+> path on a cold boot is to let nx start once, then stop it.
 
 ## Barcode scanner
 
