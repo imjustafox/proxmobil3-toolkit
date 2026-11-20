@@ -296,21 +296,28 @@ powered), `0x40=00` (DAC unmuted — the default is `0x0c`, muted), and `0x89=3c
 repo) does exactly this.
 
 > **Cold-boot caveat (open issue).** The two steps above were verified on a unit
-> where **nx had started this boot and was then stopped** — which is what every
-> working path does (transit-sim's agent and `deploy/autorun.sh` both run
-> `systemctl stop nx` first). On a *true* cold boot where **nx never ran** (the
-> dongle `autorun.sh` path), the LOL/LOR output drivers can stay unpowered
-> (`0x89` reads `0x0c`, driver bits `0x30` clear) and you get silence even with the
-> routing restored and a file playing — the DAC powers from the stream but the
-> Line-Out driver never comes up. Cause: this is a `simple-audio-card` ("PM3 Audio",
-> DT `sound` node) with a DAPM **"Line Out"** endpoint routed to `LOL`/`LOR`, and
-> the output-driver power is **DAPM-managed — there is no mixer control for it**, so
-> `/etc/asound.state` / `alsactl restore` (which `alsa-restore.service` already runs
-> at boot) can never set `0x89`. nx powers the endpoint as a side effect of its
-> GStreamer playback; the bare `alsactl` + `aplay` recipe does not replicate that
-> from cold. Making `pm3.py play` work on a never-ran-nx boot (force-enabling the
-> DAPM Line-Out pin) is under active investigation — until it's solved, the reliable
-> path on a cold boot is to let nx start once, then stop it.
+> where **nx had played audio once this boot and was then stopped** — which is what
+> every working path happens to do (transit-sim's agent and `deploy/autorun.sh` both
+> run against a unit nx had been driving, then `systemctl stop nx`). On a *true* cold
+> boot where **nx never ran** (the dongle `autorun.sh` path), the same recipe is
+> **silent** even with routing restored and a file playing. Established on the live
+> unit:
+>
+> - The gate is **not in the codec.** The codec registers during a silent cold
+>   playback and during a working post-nx playback are *identical* (`0x3f=d4`,
+>   `0x40=00`, `0x89=0c` both times) — so it is not an output-driver power bit
+>   (the earlier `0x89` theory was wrong).
+> - nx merely *starting* and sitting idle does **not** enable it; nx has to actually
+>   **play audio** once. After that, playback works nx-free until the next reboot.
+> - It is not a DT-modelled rail either: the codec supplies (`vcc3v3-audio`,
+>   `supply-mba6-3p3v`) are always-on, and the DT has no audio amp-enable GPIO.
+>
+> So some persistent enable **downstream of the codec** (a directly-driven GPIO, or
+> SSI/AUDMUX/SDMA fabric primed by the first real stream) is what nx's first playback
+> turns on and leaves on. Pinning it (and the proper `os-build` fix) is under active
+> investigation. Until then, the reliable cold-boot path is to **let nx play once,
+> then stop it**; `alsa-restore.service` already runs `alsactl restore` at boot, so
+> the manual restore in the recipe is redundant on this unit.
 
 ## Barcode scanner
 
