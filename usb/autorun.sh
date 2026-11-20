@@ -27,5 +27,8 @@ systemctl enable sshd.socket
 systemctl restart sshd.socket
 mount -o remount,ro /
 
+# Mark this USB so dump_unit.py never captures the dongle it booted from.
+touch "$HERE/.pm3-nodump" 2>/dev/null
+
 date
 echo "ssh enabled, watchdog off, nx NOT started (reader auto-scan free for our tool)"
