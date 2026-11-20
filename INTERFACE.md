@@ -265,15 +265,17 @@ TLV320AIC32x4 codec (I²C bus 0 @ 0x18, fed over SSI), exposed as ALSA card 0
 "PM3 Audio". There's a capture path too (Mic PGA / ADC). The piezo buzzer above is
 separate hardware — the ALSA mixer does not affect it, and vice versa.
 
-The speaker works with **nx stopped** — but two non-obvious things have to be right,
-and missing either one gives *silence with no error*:
+**Prerequisite (open issue): nx must have played audio at least once since
+power-on.** Once it has — e.g. a card-tap tone — the speaker keeps working even after
+`systemctl stop nx`, until the next reboot. On a *true* cold boot where nx has never
+played (e.g. the dongle `autorun.sh` path) the speaker is **silent no matter what**;
+this is not yet explained — see the speaker lesson in `PROCESS.md`. With that
+prerequisite met and nx stopped, two details still have to be right or you get
+*silence with no error*:
 
-1. **Restore the output routing first.** On a fresh boot without nx the DAC powers
-   up but the output drivers and Line-Out routing are not configured, so nothing
-   reaches the speaker. Restore the stock mixer state, then set the Line-Out driver
-   to its 0 dB baseline:
+1. **Line-Out driver gain at its 0 dB baseline.** `alsa-restore.service` already
+   restores `/etc/asound.state` at boot, so the routing is set; just confirm the gain:
    ```sh
-   alsactl -f /etc/asound.state restore
    amixer -c 0 sset 'LO Driver Gain' 6     # 6 = 0 dB; this is the baseline, not the volume
    ```
 2. **Play from a file, not a pipe.** `aplay /tmp/x.wav` plays; piping into aplay
@@ -290,34 +292,21 @@ amixer -c 0 sset PCM 65%
 scp -O tone.wav root@<ip>:/tmp/ && ssh root@<ip> aplay /tmp/tone.wav   # file, not a pipe
 ```
 
-During working playback the codec registers (i2c 0-0018) read `0x3f=d4` (DAC
-powered), `0x40=00` (DAC unmuted — the default is `0x0c`, muted), and `0x89=3c`
-(LOL/LOR output drivers powered). The transit-sim agent (`agent/pm3hw.py`, separate
-repo) does exactly this.
+The transit-sim agent (`agent/pm3hw.py`, separate repo) does exactly this, on a unit
+where nx has already played.
 
-> **Cold-boot caveat (open issue).** The two steps above were verified on a unit
-> where **nx had played audio once this boot and was then stopped** — which is what
-> every working path happens to do (transit-sim's agent and `deploy/autorun.sh` both
-> run against a unit nx had been driving, then `systemctl stop nx`). On a *true* cold
-> boot where **nx never ran** (the dongle `autorun.sh` path), the same recipe is
-> **silent** even with routing restored and a file playing. Established on the live
-> unit:
->
-> - The gate is **not in the codec.** The codec registers during a silent cold
->   playback and during a working post-nx playback are *identical* (`0x3f=d4`,
->   `0x40=00`, `0x89=0c` both times) — so it is not an output-driver power bit
->   (the earlier `0x89` theory was wrong).
-> - nx merely *starting* and sitting idle does **not** enable it; nx has to actually
->   **play audio** once. After that, playback works nx-free until the next reboot.
-> - It is not a DT-modelled rail either: the codec supplies (`vcc3v3-audio`,
->   `supply-mba6-3p3v`) are always-on, and the DT has no audio amp-enable GPIO.
->
-> So some persistent enable **downstream of the codec** (a directly-driven GPIO, or
-> SSI/AUDMUX/SDMA fabric primed by the first real stream) is what nx's first playback
-> turns on and leaves on. Pinning it (and the proper `os-build` fix) is under active
-> investigation. Until then, the reliable cold-boot path is to **let nx play once,
-> then stop it**; `alsa-restore.service` already runs `alsactl restore` at boot, so
-> the manual restore in the recipe is redundant on this unit.
+> **Why the prerequisite (open).** This was chased hard on the live unit. Between a
+> *silent* cold-boot playback and a *working* post-nx playback, **everything readable
+> from the kernel is identical** — codec registers (regmap view, pages 0–1), DAPM
+> widgets, GPIO, the whole audio clock tree (including the 24 MHz CKO2 that is the
+> codec MCLK), AUDMUX routing, and the SSI1 config; the SSI transmits valid I²S with
+> real samples in both. Yet one is silent and one plays, and the working state
+> persists only until reboot. So the gate is some state nx's *playback* leaves behind
+> that none of those views expose — either a codec register written over **raw i²C**
+> (which the kernel's caching regmap would not reflect, so a regmap dump can't rule
+> the codec out) or SDMA/driver-init state. The lead now is **reverse-engineering
+> what the nx audio path (GStreamer-based) writes**; `PROCESS.md` tracks it. Until
+> it's pinned, the reliable path is: **let nx play once, then stop it.**
 
 ## Barcode scanner
 
