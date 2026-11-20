@@ -16,6 +16,9 @@ software — reading NFC cards and barcodes, driving the screen, buzzer, and sen
 - **`docs/feig-firmware.md`** — top-to-bottom static reverse-engineering of the
   reader's own `feig` application (the IPP dispatch, card schemes, SAM, HSM, ITSO,
   EMV, girogo, crypto), from the unstripped binary's symbols and disassembly.
+- **`docs/system-findings.md`** — provenance (the INIT-004 BSP, toolchain,
+  versions), latent onboard WiFi/BT (TI WL1837, not fitted here), kernel/platform
+  capabilities, and the boot/access security posture.
 - **`docs/host-system.md`** — the i.MX6 host system: boot/storage, and the
   account-based-ticketing backend (`proxy_server`/abtproxy — local HTTP API, the
   Bytemark "UVAPI" cloud flow, online/offline validation, passback, the SQLite
