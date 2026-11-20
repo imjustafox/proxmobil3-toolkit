@@ -35,14 +35,18 @@ software — reading NFC cards and barcodes, driving the screen, buzzer, and sen
 - **`keyserver/`** — a small HTTP server that replaces the device's cloud backend
   locally, to drive the stock app fully offline.
 - **`usb/`** — the boot script that installs SSH access via the dongle EEPROM.
+- **`make_dongle.py`** — prepare the access USB on macOS or Linux: formats the stick
+  (MBR/FAT32/`MP_SD`) and copies `autorun.sh`, your SSH key(s), and the `.pm3-nodump`
+  marker. Keys from a local `.pub`, an https URL, a GitHub username, or `~/.ssh`.
 - **`dump_unit.py`** — one command: a full, checksummed capture of a unit (storage +
   hardware scan + provisioning archives + cVEND reader firmware + live reader config)
-  to `dumps/unit<SERIAL>/`, then restores the unit to stock. See
+  to `~/Documents/pm3-dumps/unit<SERIAL>/`, then restores the unit to stock. See
   **`docs/capturing-a-unit.md`**.
 - **`os-build/`** — the device's kernel config, for building a custom OS image.
 
 The storage dumps (device images, which contain the agency's production secrets)
-are deliberately **not** in this repo; see the note at the bottom.
+land **outside** this repo by default (`~/Documents/pm3-dumps`); see the note at the
+bottom.
 
 ## Quick start
 
@@ -51,14 +55,21 @@ are deliberately **not** in this repo; see the note at the bottom.
 SSH is open but root login is closed and there's no published default password.
 With a PROXdongl3 that has the EEPROM payload (dated 2025-12-30 or later):
 
-1. Format a USB stick as **MBR, one FAT32 partition, label `MP_SD`** —
-   `diskutil eraseDisk FAT32 MP_SD MBRFormat /dev/diskN` on macOS. One MBR partition
-   matters: the device mounts partition 1, and a default GPT layout makes that an
-   empty EFI partition where the payload finds no script.
-2. Copy `usb/autorun.sh` and your SSH public key as `usb/authorized_keys` onto it
+1. Prepare an access USB. The easy way, on macOS or Linux:
+   ```sh
+   ./make_dongle.py      # pick the USB + your SSH key(s); it formats and copies everything
+   ```
+   It formats the stick as **MBR, one FAT32 partition, label `MP_SD`** and copies
+   `autorun.sh`, your key(s) as `authorized_keys`, and the `.pm3-nodump` marker.
+   (macOS needs only the built-in `diskutil`; Linux needs `parted`, `mkfs.vfat` from
+   `dosfstools`, `lsblk`/`partprobe`/`udevadm` from util-linux, and `sudo`.) By
+   hand instead: format it that way (`diskutil eraseDisk FAT32 MP_SD MBRFormat
+   /dev/diskN` on macOS — one MBR partition matters: the device mounts partition 1,
+   and a default GPT layout makes that an empty EFI partition where the payload finds
+   no script), then copy `usb/autorun.sh` and your public key as `usb/authorized_keys`
    (see `usb/authorized_keys.example`).
-3. Plug it into the dongle's USB-A port and power-cycle the unit.
-4. Wait ~30 s, then `ssh root@<unit-ip>`. A `pm3-autorun.log` appears on the stick.
+2. Plug it into the dongle's USB-A port and power-cycle the unit.
+3. Wait ~30 s, then `ssh root@<unit-ip>`. A `pm3-autorun.log` appears on the stick.
 
 The script runs instead of nx, installs your key, and disables the watchdog. The SSH
 access persists across reboots. Without the EEPROM dongle, the same script can go on
@@ -109,8 +120,9 @@ PM3_HOST=<unit-ip> ./pm3.py info            # kernel, services, ttys
 Rear DB15: 1/2 Eth Tx±, 3/4 Eth Rx±, 5 CL15 ignition, 6/7 USB D±, 8-10 GND,
 11/12 CL30 main power, 13/14 I²C, 15 3V3 out.
 
-The PIC32 watchdog powers the unit off ~60 s after boot unless fed. nx feeds it;
-if you stop nx, disable it with `./pm3.py watchdog 0`.
+The PIC32 watchdog reboots the unit ~60 s after boot unless fed (it power-cycles and
+comes back, not a permanent off). nx feeds it; if you stop nx, disable it with
+`./pm3.py watchdog 0`. See `INTERFACE.md` §PIC32 for the reboot-vs-power-off detail.
 
 ## References
 
@@ -123,6 +135,7 @@ if you stop nx, disable it with `./pm3.py watchdog 0`.
 
 The device's backend config (`config.json`, `keys.json`) holds the transit agency's
 OAuth credentials and card-reading keys. Those live only in the storage dumps, which
-are git-ignored and not published. Using them against the agency's systems, or
+default to `~/Documents/pm3-dumps` (outside this repo) and are not published. (`dumps/`
+is also git-ignored, so capturing in-tree with `--out ./dumps` stays safe too.) Using them against the agency's systems, or
 against cards that aren't yours, would be unauthorized regardless of who owns the
 hardware. For your own projects, replace the backend (see `keyserver/`).
