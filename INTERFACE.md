@@ -38,9 +38,10 @@ Ways in, cleanest first:
    dropped in `/init/install/archive/`, is unpacked and run at boot. Downgrades are
    skipped (name's first 4 chars vs `BaseVersion` in `efad/pgm/arcinfo.dat`).
 
-The PIC32 watchdog powers the unit off about 60 s after boot unless something feeds
-it. nx feeds it; if you stop nx, disable it (`./pm3.py watchdog 0`, or the IPP write
-in `usb/autorun.sh`). Any long-running custom boot path has to handle this first.
+The PIC32 watchdog reboots the unit about 60 s after boot unless something feeds it
+(it power-cycles and comes back — see the watchdog note under §PIC32). nx feeds it;
+if you stop nx, disable it (`./pm3.py watchdog 0`, or the IPP write in
+`usb/autorun.sh`). Any long-running custom boot path has to handle this first.
 
 The rootfs is mounted read-only; `mount -o remount,rw /` before editing system files.
 
@@ -84,7 +85,11 @@ Recipe (what `tap_demo.py` and `pm3.py cvend-watch` do):
 3. Send a `0x04` status frame about once a second so the reader doesn't go idle.
 4. Read the pushed card frames. With no card types enabled, every card arrives as
    `0xBE` (UnhandledCard) carrying the 7-byte UID. The UID starts at the first
-   `0x04` byte in the payload (NXP cards begin with `0x04`).
+   `0x04` byte in the payload (NXP cards begin with `0x04`). **Gate on the frame
+   `type == 0xBE`, not on "a `0x04` byte appeared"** — the `0xD1` status and `0xED`
+   log frames the reader also streams contain `0x04` bytes too, and anchoring on the
+   byte instead of the frame type yields phantom "card" reads (a bug we hit and
+   fixed in transit-sim's read loop).
 
 Verified continuous: 74 reads of 5 different cards streaming from 55 s to 242 s of
 uptime without a gap. Start the reader loop at boot and keep the keepalive going;
@@ -107,6 +112,17 @@ Reading stored fare data (not just the UID) needs the card's application keys. A
 transit card like ORCA returns its UID freely but its value is behind the
 consortium's DESFire keys, which this unit doesn't hold; the reader logs
 `transceive error on desf cmd 0x6E` and moves on.
+
+**Telling cards apart without keys.** Nearly every transit card we tested — ORCA
+(Seattle), Compass (Vancouver), Ventra (Chicago), Peggo (Winnipeg), NFTA Metro
+(Buffalo) — is an NXP **DESFire** card and presents *identically* at the type layer
+(`ATQA 0x0344` / `SAK 0x20`). Without the keys there is nothing to distinguish one
+card, or one agency, from another except the **UID itself** (and its OUI-like
+prefix). So any "act like the ORCA reader for ORCA cards, the Peggo reader for Peggo
+cards" behaviour has to be driven by a UID allow-list, not by card type — that is
+exactly how transit-sim's per-card rules work. The one easy outlier: a hotel room
+key (e.g. a Marriott key) is a **MIFARE Ultralight** (`ATQA 0x0044` / `SAK 0x00`), a
+different type, so *that* is distinguishable without any UID list.
 
 The reader polls two independent ways: this base ISO14443A scan (`0xBE`/`0xD5`/
 `0xB1`, no config needed, what we use), and a separate **EMV entry-point** poll
@@ -244,10 +260,43 @@ inaudible, ~120 ms is a clean beep. Volume isn't adjustable — shorten the puls
 move off resonance to make it quieter. `./pm3.py beep --freq 2700 --ms 120`.
 `tap_demo.py` includes a note on driving melodies.
 
-Speaker: TI TLV320AIC32x4 codec on I²C bus 0 @ 0x18 via SSI, as ALSA card 0
-"PM3 Audio". `aplay file.wav` plays through the speaker; there's a capture path too
-(Mic PGA / ADC). Mixer controls include `PCM`, `HP Driver Gain`, `LO Driver Gain`.
-The piezo buzzer is separate hardware — the ALSA mixer does not affect it.
+Speaker: the two grille speakers are on the **Line-Out (LOL/LOR)** of a TI
+TLV320AIC32x4 codec (I²C bus 0 @ 0x18, fed over SSI), exposed as ALSA card 0
+"PM3 Audio". There's a capture path too (Mic PGA / ADC). The piezo buzzer above is
+separate hardware — the ALSA mixer does not affect it, and vice versa.
+
+The speaker works with **nx stopped and no nx involvement at all** — but two
+non-obvious things have to be right, and missing either one gives *silence with no
+error*, which is what led to an earlier (wrong) "the speaker needs nx's init"
+conclusion:
+
+1. **Restore the output routing first.** On a fresh boot without nx the DAC powers
+   up but the output drivers and Line-Out routing are not configured, so nothing
+   reaches the speaker. Restore the stock mixer state, then set the Line-Out driver
+   to its 0 dB baseline:
+   ```sh
+   alsactl -f /etc/asound.state restore
+   amixer -c 0 sset 'LO Driver Gain' 6     # 6 = 0 dB; this is the baseline, not the volume
+   ```
+2. **Play from a file, not a pipe.** `aplay /tmp/x.wav` plays; piping into aplay
+   (`… | aplay -q -` reading stdin) is **silent** on this device's aplay/ALSA.
+   Copy the WAV onto the unit and play the file.
+
+Volume is the **`PCM`** control, as a percentage — `amixer -c 0 sset PCM 65%`. (Leave
+`LO Driver Gain` at the 6/0 dB baseline and use PCM as the knob.) End to end:
+
+```sh
+alsactl -f /etc/asound.state restore
+amixer -c 0 sset 'LO Driver Gain' 6
+amixer -c 0 sset PCM 65%
+scp -O tone.wav root@<ip>:/tmp/ && ssh root@<ip> aplay /tmp/tone.wav   # file, not a pipe
+```
+
+During working playback the codec registers (i2c 0-0018) read `0x3f=d4` (DAC
+powered), `0x40=00` (DAC unmuted — the default is `0x0c`, muted), and `0x89=3c`
+(output drivers on); these are the same values nx produces, confirming nx adds
+nothing the two steps above don't. The transit-sim agent (`agent/pm3hw.py`,
+separate repo) does exactly this on a stopped-nx unit.
 
 ## Barcode scanner
 
@@ -271,8 +320,17 @@ The PIC32 is a power and health supervisor, not just a watchdog. Read its keys w
   count, `c000`/`c001` firmware/bootloader versions, `c0c0` timer-health string.
 - `0x4003` watchdog timeout (seconds; 0 disables).
 
-Watchdog control: `./pm3.py watchdog 0`. Never send PIC32 IPP `0x0c` or `0x0e` with
-an empty payload — they power the unit off instantly.
+Watchdog control: `./pm3.py watchdog 0`. When the PIC32 watchdog expires it
+**reboots** the unit (a full power-cycle that comes back on its own), not a permanent
+power-off — so letting it expire is in effect the one software path to a hardware
+reboot without the power button. That is distinct from PIC32 IPP `0x0c` / `0x0e`
+with an empty payload, which **power the unit off instantly and it stays off** —
+never send those.
+
+There is a second watchdog: the i.MX6 SoC's own `imx2-wdt` (~10 s), which **systemd**
+feeds via its `RuntimeWatchdogSec` setting. systemd keeps feeding it as long as it's
+running, so stopping nx does not trip it — only the external PIC32 watchdog bites
+when nx stops, which is why `watchdog 0` is the one you need.
 
 The PIC32 is a **PIC32MX795** (per nx's `spic/pic32mx795` driver). Firmware
 identity (keys `c000`/`c001`): app `PROXmobil3 PIC32 / PM3-P32` **rev 0.20**

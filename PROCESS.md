@@ -104,6 +104,16 @@ once a second, just listen, and it streams a UID frame for every card, indefinit
 - **The simplest explanation was right, and we reached it last.** The reader just
   scans and pushes; everything clever we tried (re-init, arming, key-server) was
   working against that, not with it.
+- **"Needs the stock firmware" is a recurring false conclusion — chase the silent
+  failure instead.** The speaker played nothing with nx stopped, so we concluded it
+  "needs nx's init." It didn't: two independent silent-failure traps were stacked —
+  piping into `aplay` (stdin) produces no sound on this device where a file plays
+  fine, and a fresh boot leaves the codec's output routing unconfigured until
+  `alsactl -f /etc/asound.state restore`. With a file and a routing restore the
+  speaker works nx-free, and the codec registers match what nx sets — nx was never
+  the missing piece. Same shape as the reader: when a subsystem only works "under the
+  stock firmware," suspect a setup step the firmware does quietly, not the firmware
+  itself.
 - **Watch the real hardware.** The screen going from OUT OF SERVICE to SCAN/TAP, a
   beep on a tap, an LED blink — those physical signals repeatedly settled questions
   that the logs alone left ambiguous.
