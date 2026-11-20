@@ -449,10 +449,21 @@ This ties the interface findings (§6) together and makes them actionable:
   re-provision.
 
 Because the dataset is text and unsigned, a custom `.p72` can reconfigure nx
-wholesale — add an AppName to `ISIAPP.dat` for ISI write access, set a service
-param in `NxParam.dat`, change parameters — then drop it in `ims/toveh` for
+wholesale — add an AppName to `ISIAPP.dat` for ISI access, set a service param in
+`NxParam.dat`, change parameters — then drop it in `ims/toveh` for
 `NxDataProvisionService` to pick up (CRC32 is the only gate). The operator's
 specific parameter values are their config and are not reproduced here.
+
+**Verified end to end (reversibly, then restored).** Adding a client AppName row to
+`ISIAPP.dat` (telling nx to pull the `Destination` item from that app), re-zipping
+the `.p72` with ordinary tools, and replacing the base dataset was enough: on
+restart nx applied it, recognized the new AppName, issued it exactly the configured
+`<IsiGet>…Destination…</IsiGet>` request, and accepted our `<IsiPut>` for
+`Destination` — which a separate read-only ISI client then read straight back out
+of nx's live `currentDestination`. So config datasets are effectively a
+**configuration-injection surface** for anyone with file or IMS-provisioning
+access: unsigned text, CRC32-gated, applied at boot. (The original `.p72` was
+restored afterward; its md5 matches the untouched copy.)
 
 ## 9. Cross-references
 
