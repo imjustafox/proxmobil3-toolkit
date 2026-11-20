@@ -285,9 +285,16 @@ A full map of the control/data surfaces of the running nx, most to least direct:
    `AppName` (=`COPILOTpcSrv`), `State`, `RouteId`, and the config-mapped
    `IsiRouteVariation`/`IsiBlockNo`/`IsiCurrentDirectionNo`/`IsiStopNumbers` (wired
    to nx's internal `Tick*` state by `nixe.ini` `NxSharedMapper` lines). Reads and
-   Register/subscribe are confirmed live; `<IsiPut>` needs well-formed closing tags
-   (`<IsiPut><IsiBlockNo>7</IsiBlockNo></IsiPut>`). This is how another on-board app
-   (or we) feeds and queries nx.
+   Register/subscribe work for **any** client AppName (confirmed live). **Writing**
+   (`<IsiPut>`, well-formed: `<IsiPut><IsiBlockNo>7</IsiBlockNo></IsiPut>`) and
+   **commands** (`<IsiExecute><op>operation args</op></IsiExecute>`, which call
+   nx's `NxOpCmd*` operations — `TicketAccess`, `TariffAccess`, `TableAccess`,
+   `OperationDay`, `ShiftSum*`, `ProvideCardNumber`…) are **gated per client**:
+   each item has a designated publisher and the server owns the route/block/state
+   items, so an unauthorized AppName (ours) gets read + subscribe only — our
+   `IsiPut`s to nx-owned items were silently ignored across several AppNames. So
+   ISI gives full visibility into nx's live state to anyone, and write/control to
+   the configured on-board apps.
 2. **IMS file queues** — nx ingests CRC32-checked provisioning archives dropped
    into `/init/ims/toveh/PROXmobil_72` (`NxImsFileScanService` /
    `NxDataProvisionService`, per data domain) and uploads results to `ims/frveh`.
@@ -302,10 +309,20 @@ A full map of the control/data surfaces of the running nx, most to least direct:
    drives directly while nx is stopped).
 
 Compiled in but **not instantiated** in this config (per `rc5.tab`): JSON-RPC
-(`NxIppJsonRpc`), the onboard-data HTTP server, the remote-config server, the
-AT-command and DIN 66019 serial protocols, and the websocket — they would need a
-config that starts their services. nx also drives the buzzer on state transitions
-(an audible tone when it goes out of service), so ISI/state changes can make sound.
+(`NxIppJsonRpc`), several HTTP servers (`NxDebugHttpControllerService` — a debug
+web UI on `127.0.0.1:8080` with a "Demo Mode"; `NxOnboardDataOverHttpServerService`;
+`NxHttpServerSimpleService`; IBIS-IP HTTP server), the remote-config server, the
+AT-command and DIN 66019 serial protocols, and the websocket. Enabling one takes
+**two halves**: adding its `*Service` class to `rc5.tab` (which *does* instantiate
+it — nx logs `Missing service … ignored` only for truly-absent classes, not these),
+**and** its port/enable config, which comes from numbered operator parameters
+(`param:NNNNN`) in the proprietary `.p72` parameter dataset. On this unit those
+params aren't set for the HTTP/RPC services, so adding the class name alone opens
+no port — verified by enabling the three HTTP services above and watching them load
+but never listen. Bringing one up would mean setting its params in the `.p72`
+dataset (a proprietary INIT format) or a param override. nx also drives the buzzer
+on state transitions (a tone when it goes out of service), so ISI/state changes can
+make sound.
 
 ### The nx shell / `NxExe` command set
 
