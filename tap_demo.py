@@ -27,13 +27,16 @@ W, H = 800, 480
 
 
 def _font(sz):
-    for p in ("/System/Library/Fonts/Supplemental/Arial Bold.ttf",
-              "/Library/Fonts/Arial.ttf", "/System/Library/Fonts/SFNS.ttf"):
+    for p in ("/System/Library/Fonts/Supplemental/Arial Bold.ttf",   # macOS
+              "/Library/Fonts/Arial.ttf", "/System/Library/Fonts/SFNS.ttf",
+              "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",  # Linux
+              "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+              "/usr/share/fonts/TTF/DejaVuSans-Bold.ttf"):
         try:
             return ImageFont.truetype(p, sz)
         except OSError:
             pass
-    return ImageFont.load_default()
+    return ImageFont.load_default()   # last resort: tiny bitmap font
 
 
 def render(uid: str, count: int) -> bytes:
@@ -79,7 +82,10 @@ def main():
                 s.send(0x04)             # steady keepalive keeps scanning alive
                 last_status = time.time()
             f = s.recv(0.4)
-            if not f or f["type"] in (0x05, 0x07, 0xED, 0xD1):
+            # Only 0xBE (UnhandledCard) carries a tap's UID in this no-init mode.
+            # Gate on the frame type, never on "a 0x04 byte appeared" -- 0xD1/0xED
+            # frames carry 0x04 bytes too and would phantom-read (see INTERFACE.md, NFC).
+            if not f or f["type"] != 0xBE:
                 continue
             uid = pm3._find_uid(f["data"])
             if not uid:
