@@ -23,6 +23,9 @@ software — reading NFC cards and barcodes, driving the screen, buzzer, and sen
   account-based-ticketing backend (`proxy_server`/abtproxy — local HTTP API, the
   Bytemark "UVAPI" cloud flow, online/offline validation, passback, the SQLite
   queue). Secrets redacted.
+- **`docs/capturing-a-unit.md`** — the full capture workflow: configuring the access
+  USB, finding a unit on the network, running `dump_unit.py`, and restoring a borrowed
+  unit to stock.
 - **`pm3.py`** — the toolkit: IPP protocol, card reading, buzzer, PIC32 sensors,
   EEPROM access. Runs on your computer, bridges the device's serial ports over SSH.
 - **`tap_demo.py`** — a working app: tap a card, its UID shows on the device screen
@@ -32,6 +35,10 @@ software — reading NFC cards and barcodes, driving the screen, buzzer, and sen
 - **`keyserver/`** — a small HTTP server that replaces the device's cloud backend
   locally, to drive the stock app fully offline.
 - **`usb/`** — the boot script that installs SSH access via the dongle EEPROM.
+- **`dump_unit.py`** — one command: a full, checksummed capture of a unit (storage +
+  hardware scan + provisioning archives + cVEND reader firmware + live reader config)
+  to `dumps/unit<SERIAL>/`, then restores the unit to stock. See
+  **`docs/capturing-a-unit.md`**.
 - **`os-build/`** — the device's kernel config, for building a custom OS image.
 
 The storage dumps (device images, which contain the agency's production secrets)
