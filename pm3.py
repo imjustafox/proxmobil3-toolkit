@@ -91,10 +91,13 @@ class SshSerial:
     (`pm3.py nx-stop`).
     """
 
-    def __init__(self, tty: str, host: str = HOST):
+    def __init__(self, tty: str, host: str = None):
+        host = host if host is not None else HOST   # read HOST at call time so --host works
         cmd = (f"stty -F {tty} 115200 cs8 -cstopb -parenb raw -echo -ixon && "
                f"(cat {tty} & CATPID=$!; cat > {tty}; kill $CATPID)")
-        self.p = subprocess.Popen(["ssh", "-T", "-o", "BatchMode=yes", f"root@{host}", cmd],
+        self.p = subprocess.Popen(["ssh", "-T", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+                                   "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
+                                   f"root@{host}", cmd],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
         self.q = queue.Queue()
         self.dec = Decoder()
@@ -144,7 +147,9 @@ def fmt(f):
 
 
 def ssh(cmd: str):
-    return subprocess.run(["ssh", "-o", "BatchMode=yes", f"root@{HOST}", cmd]).returncode
+    return subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+                           "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
+                           f"root@{HOST}", cmd]).returncode
 
 
 # --- PIC32 -----------------------------------------------------------------
