@@ -272,6 +272,41 @@ running it opens exactly two more ports:
   telemetry client** — most dormant here.
 - **`:80` — `proxy_server`** (the ABT API, §3), when `init-abtproxy` runs.
 
+### Every way to talk to nx directly
+
+A full map of the control/data surfaces of the running nx, most to least direct:
+
+1. **ISI (`:51001`)** — the primary programmatic interface (`NxIsiService`,
+   network-exposed on all interfaces). After the `<IsiId><AppName>…</AppName></IsiId>`
+   handshake it is a get/set/**subscribe** data bus over XML: `<IsiGet>` reads
+   items, `<IsiPut>` writes them, `<IsiRegister>` subscribes (nx then pushes
+   `<IsiPut>` updates on change, via its OnChange/Cyclic tag processors), and
+   `<IsiExecute>` runs commands. Items are the COPILOT transit data model —
+   `AppName` (=`COPILOTpcSrv`), `State`, `RouteId`, and the config-mapped
+   `IsiRouteVariation`/`IsiBlockNo`/`IsiCurrentDirectionNo`/`IsiStopNumbers` (wired
+   to nx's internal `Tick*` state by `nixe.ini` `NxSharedMapper` lines). Reads and
+   Register/subscribe are confirmed live; `<IsiPut>` needs well-formed closing tags
+   (`<IsiPut><IsiBlockNo>7</IsiBlockNo></IsiPut>`). This is how another on-board app
+   (or we) feeds and queries nx.
+2. **IMS file queues** — nx ingests CRC32-checked provisioning archives dropped
+   into `/init/ims/toveh/PROXmobil_72` (`NxImsFileScanService` /
+   `NxDataProvisionService`, per data domain) and uploads results to `ims/frveh`.
+   A file-based config/data channel: write a valid archive and nx picks it up.
+3. **`:26` maintenance shell** — login-gated (FVSCrypt, not accessible); but as
+   root the same nx shell functions are reachable through `NxExe` (below).
+4. **systemd / signals** — `systemctl start`/`stop nx`, plus nx's Start/Stop/Kill
+   listeners.
+5. **Config + restart** — edit the `/init/efad/pgm/*.{ini,tab,xml}` set as root and
+   restart nx (the behaviour is config-driven; `rc5.tab` is its service table).
+6. **Peripheral IPP** — the reader/PIC32 serial links nx mediates (what `pm3.py`
+   drives directly while nx is stopped).
+
+Compiled in but **not instantiated** in this config (per `rc5.tab`): JSON-RPC
+(`NxIppJsonRpc`), the onboard-data HTTP server, the remote-config server, the
+AT-command and DIN 66019 serial protocols, and the websocket — they would need a
+config that starts their services. nx also drives the buzzer on state transitions
+(an audible tone when it goes out of service), so ISI/state changes can make sound.
+
 ### The nx shell / `NxExe` command set
 
 The `:26` shell and the `NxExe` CLI expose the same "NX Toolbox" functions. We
