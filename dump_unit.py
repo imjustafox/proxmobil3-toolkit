@@ -1,16 +1,22 @@
 #!/usr/bin/env python3
 """dump_unit.py -- full capture + stock-restore for an INIT PROXmobil3 unit.
 
-Does, over SSH (root access is provided by the mp_sd [TestMode] dongle's autorun),
-everything we do by hand to a borrowed unit, writing to dumps/unit<SERIAL>/:
+Over SSH (root access comes from the mp_sd dongle's autorun), capture a unit to
+<out>/unit<SERIAL>/, then put it back to stock. Default output is
+~/Documents/pm3-dumps (override with --out or $PM3_DUMPS).
 
-  1. identify     - TQMa6S module EEPROM serial  -> dumps/unit<SERIAL>/
+  1. identify     - TQMa6S module EEPROM serial -> <out>/unit<SERIAL>/
   2. hardware     - hwscan.txt, dmesg.txt
-  3. storage      - mtdblock0.img.gz, sda.img.gz, sdb.img.gz  (streamed dd|gzip, sha256)
+  3. storage      - every whole disk the unit has (mtdblock0, sda, sdb, ...), each
+                    streamed dd|gzip with a sha256. Dumped smallest-first, skipping
+                    any disk that won't fit in the output volume's free space, and
+                    skipping the boot dongle (any disk whose mounted filesystem has
+                    a .pm3-nodump marker file). SUMMARY.md records what was and
+                    wasn't captured, and why.
   4. provisioning - host-archive/  (the .p72/.g72/.C72 dataset from /init/efad/data/archive)
   5. reader fw    - reader-firmware/  (cVEND kernel+rootfs+app, unpacked from V0200.C72)
   6. reader live  - reader-live/  (config/version/EMV counter/Girogo, via pm3.py over the serial)
-  7. SUMMARY.md   - manifest with serial, hardware, checksums
+  7. SUMMARY.md   - manifest with serial, hardware, per-disk status, checksums
   8. cleanup      - restore stock sshd_config (from the autorun's own .stock backup),
                     remove our key + the sshd.socket enable, remount rootfs ro
                     (skip with --no-cleanup)
@@ -20,14 +26,15 @@ Usage:
     python3 dump_unit.py --host 10.0.1.102 --no-cleanup          # keep our access
     python3 dump_unit.py --host 192.168.1.98 --no-reader --no-dump   # scans only
 
-The dumps hold operator production data; the dumps/ tree is git-ignored. After a run
-with cleanup, we are locked out (stock restored) -- pull the dongle before returning
-the unit.  Reader file-ops reuse pm3.py (same directory).
+The dumps hold operator production data; keep them off any repo (the default lives
+outside this tree). After a run with cleanup we are locked out (stock restored) --
+pull the dongle before returning the unit. Reader file-ops reuse pm3.py (same directory).
 """
 import argparse
 import gzip
 import hashlib
 import os
+import shutil
 import subprocess
 import sys
 import time
@@ -104,11 +111,47 @@ def hardware_scan(host, outdir):
 
 # ---- 3. storage dump -------------------------------------------------------
 
+def list_disks(host):
+    """Whole-disk block devices from /proc/partitions, smallest-first.
+
+    Returns [(name, size_bytes), ...]. Drops ram*/loop*, and drops partitions
+    (a name is a partition when some listed whole disk is a prefix of it, e.g.
+    sda1 belongs to sda); mtdblock0 has no partitions so it stays."""
+    rows = []
+    for line in sh(host, "cat /proc/partitions").splitlines():
+        p = line.split()
+        if len(p) == 4 and p[0].isdigit():
+            rows.append((p[3], int(p[2]) * 1024))
+    names = [n for n, _ in rows if not n.startswith(("ram", "loop"))]
+    disks = [(n, sz) for n, sz in rows
+             if n in names and not any(n != m and n.startswith(m) for m in names)]
+    disks.sort(key=lambda d: d[1])
+    return disks
+
+
+def dongle_disks(host, disks, marker=".pm3-nodump"):
+    """Names of whole disks whose mounted filesystem carries the skip marker
+    (the boot dongle marks itself this way; see usb/autorun.sh)."""
+    skip = set()
+    for line in sh(host, "mount").splitlines():
+        p = line.split()
+        if len(p) >= 3 and p[0].startswith("/dev/") and p[1] == "on":
+            dev, mp = p[0].split("/")[-1], p[2]
+            if sh(host, f"test -e '{mp}/{marker}' && echo y").strip() != "y":
+                continue
+            owner = max((n for n, _ in disks if dev.startswith(n)), key=len, default=dev)
+            skip.add(owner)
+    return skip
+
+
 def dump_block(host, dev, outpath):
-    """Stream `dd if=/dev/<dev>` over ssh -> gzip locally, returning (sha256, bytes)."""
+    """Stream `dd if=/dev/<dev>` over ssh -> gzip locally.
+
+    Returns (sha256, bytes), or (None, bytes) if dd failed or read nothing (in
+    which case the empty .gz is removed so it can't look like a real capture)."""
     log(f"dumping /dev/{dev} -> {os.path.basename(outpath)} (streaming dd|gzip)")
-    p = subprocess.Popen(SSH + [f"root@{host}", f"dd if=/dev/{dev} bs=1M 2>/dev/null"],
-                         stdout=subprocess.PIPE)
+    p = subprocess.Popen(SSH + [f"root@{host}", f"dd if=/dev/{dev} bs=1M"],
+                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     h = hashlib.sha256()
     total = 0
     with gzip.open(outpath, "wb", compresslevel=3) as gz:
@@ -119,7 +162,14 @@ def dump_block(host, dev, outpath):
             h.update(chunk)
             gz.write(chunk)
             total += len(chunk)
-    p.wait()
+    rc = p.wait()
+    if rc != 0 or total == 0:
+        log(f"  {dev}: FAILED (dd rc={rc}, {total} bytes) -- removing empty capture")
+        try:
+            os.remove(outpath)
+        except OSError:
+            pass
+        return None, total
     log(f"  {dev}: {total:,} bytes  sha256={h.hexdigest()}")
     return h.hexdigest(), total
 
@@ -184,23 +234,27 @@ def reader_live(host, outdir):
                               capture_output=True, timeout=timeout).stdout
 
     pm3_text(["cvend-restart"])              # wake a slept/idle reader
-    open(os.path.join(rl, "version.txt"), "w").write(pm3_text(["cvend-version"]))
+    with open(os.path.join(rl, "version.txt"), "w") as f:
+        f.write(pm3_text(["cvend-version"]))
     for path in READER_LISTS:
         name = "ls" + path.replace("/home/app0", "").replace("/", "-") + ".txt"
-        open(os.path.join(rl, name), "w").write(pm3_text(["cvend-ls", path]))
+        with open(os.path.join(rl, name), "w") as f:
+            f.write(pm3_text(["cvend-ls", path]))
     for path, name in READER_FILES:
         data = pm3_bytes(["cvend-cat", path])
         if data:
-            open(os.path.join(rl, name), "wb").write(data)
+            with open(os.path.join(rl, name), "wb") as f:
+                f.write(data)
 
 
 # ---- 7. manifest -----------------------------------------------------------
 
-def write_summary(outdir, serial, part, mac, host, sums, archives, reader_ver):
+def write_summary(outdir, serial, part, mac, host, disks, sums, archives, reader_ver):
     dt = ""
     hp = os.path.join(outdir, "hwscan.txt")
     if os.path.isfile(hp):
-        lines = open(hp, errors="replace").read().splitlines()
+        with open(hp, errors="replace") as f:
+            lines = f.read().splitlines()
         for i, l in enumerate(lines):
             if l.startswith("### dt-model") and i + 1 < len(lines):
                 dt = lines[i + 1].strip()
@@ -210,9 +264,12 @@ def write_summary(outdir, serial, part, mac, host, sums, archives, reader_ver):
         f.write(f"- Module: **{part or '?'}**, serial **{serial}**, MAC {mac}\n")
         f.write(f"- Device-tree model: {dt}\n")
         f.write(f"- Captured: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-        f.write("## Storage dumps (gzipped; sha256 of decompressed image)\n")
-        for name, sha in sums.items():
-            f.write(f"- {name}  sha256={sha}\n")
+        f.write("## Storage disks\n")
+        for name, size, status in disks:
+            sha = sums.get(f"{name}.img.gz")
+            tail = f" sha256={sha}" if sha else ""
+            f.write(f"- /dev/{name} ({size:,} B): {status}{tail}\n")
+        f.write("\n(sha256 is of the decompressed image.)\n")
         f.write("\n## Also captured\n")
         f.write("- hwscan.txt, dmesg.txt\n")
         f.write(f"- host-archive/ — provisioning dataset: {' '.join(archives)}\n")
@@ -243,9 +300,11 @@ def cleanup(host):
 # ---- orchestration ---------------------------------------------------------
 
 def main():
+    default_out = os.environ.get("PM3_DUMPS") or os.path.expanduser("~/Documents/pm3-dumps")
     ap = argparse.ArgumentParser(description="Full capture + stock-restore of a PROXmobil3 unit.")
-    ap.add_argument("--host", required=True, help="unit IP (reachable via the [TestMode] dongle's ssh)")
-    ap.add_argument("--out", default=os.path.join(HERE, "dumps"), help="output root (default: ./dumps)")
+    ap.add_argument("--host", required=True, help="unit IP (reachable via the dongle's ssh)")
+    ap.add_argument("--out", default=default_out,
+                    help="output root (default: $PM3_DUMPS or ~/Documents/pm3-dumps)")
     ap.add_argument("--no-dump", action="store_true", help="skip the big block dumps (scans only)")
     ap.add_argument("--no-reader", action="store_true", help="skip the live reader serial pull")
     ap.add_argument("--no-cleanup", action="store_true", help="leave our ssh access in place")
@@ -264,13 +323,32 @@ def main():
 
     hardware_scan(host, outdir)
 
+    all_disks = list_disks(host)
+    skip = dongle_disks(host, all_disks)
+    log("disks: " + ", ".join(f"{n} ({sz:,}B{', dongle' if n in skip else ''})"
+                              for n, sz in all_disks))
+
     sums = {}
-    if not a.no_dump:
-        for dev, name in [("mtdblock0", "mtdblock0.img.gz"), ("sda", "sda.img.gz"), ("sdb", "sdb.img.gz")]:
-            sha, _ = dump_block(host, dev, os.path.join(outdir, name))
-            sums[name] = sha
-    else:
-        log("--no-dump: skipping block dumps")
+    disks = []   # (name, size, status) for SUMMARY.md
+    for name, size in all_disks:   # smallest-first (list_disks sorts)
+        if a.no_dump:
+            disks.append((name, size, "not dumped (--no-dump)"))
+            continue
+        if name in skip:
+            log(f"skipping /dev/{name}: .pm3-nodump marker (boot dongle)")
+            disks.append((name, size, "skipped: .pm3-nodump marker (dongle)"))
+            continue
+        free = shutil.disk_usage(outdir).free
+        if size > free:
+            log(f"skipping /dev/{name}: {size:,} B > {free:,} B free in {a.out}")
+            disks.append((name, size, f"skipped: too large ({size:,} B > {free:,} B free)"))
+            continue
+        sha, total = dump_block(host, name, os.path.join(outdir, f"{name}.img.gz"))
+        if sha is None:
+            disks.append((name, size, "FAILED: dd error / empty"))
+        else:
+            sums[f"{name}.img.gz"] = sha
+            disks.append((name, size, f"captured {total:,} B -> {name}.img.gz"))
 
     archives = copy_archives(host, outdir)
     reader_ver = unpack_reader_fw(outdir)
@@ -281,7 +359,7 @@ def main():
         except Exception as e:
             log(f"reader-live skipped ({e})")
 
-    write_summary(outdir, serial, part, mac, host, sums, archives, reader_ver)
+    write_summary(outdir, serial, part, mac, host, disks, sums, archives, reader_ver)
     log(f"capture complete -> {outdir}")
 
     if a.no_cleanup:
