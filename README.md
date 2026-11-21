@@ -23,6 +23,8 @@ cards and barcodes, driving the screen, buzzer, and sensors.
   online/offline validation, passback, SQLite queue). Secrets redacted.
 - `docs/capturing-a-unit.md`: capture workflow: prepare the access USB, find a
   unit on the network, run `dump_unit.py`, restore a borrowed unit to stock.
+- `docs/unit-comparison.md`: differences between the three captured units:
+  hardware identity, install history, provisioning data, and runtime state.
 - `pm3.py`: toolkit for IPP, card reading, buzzer, PIC32 sensors, and EEPROM
   access. Runs on your computer and bridges the device's serial ports over SSH.
 - `tap_demo.py`: working app: tap a card, its UID appears on the device screen
