@@ -12,6 +12,7 @@ Frame:  BC seq replyTo msgType lenHi lenLo hdrCRC8 data... [crc32 LE]
         crc32 (CRC-32/JAMCRC, bit-inverted, little-endian) only when msgType >= 0x80
 """
 import argparse
+import atexit
 import binascii
 import os
 import struct
@@ -89,6 +90,9 @@ class SshSerial:
 
     Holding the tty while nx is running will fight with nx; stop it first
     (`pm3.py nx-stop`).
+
+    Use this as a context manager. If the process is interrupted before close()
+    runs, atexit closes the ssh child so it does not outlive the tool.
     """
 
     def __init__(self, tty: str, host: str = None):
@@ -101,17 +105,22 @@ class SshSerial:
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE, bufsize=0)
         self.q = queue.Queue()
         self.dec = Decoder()
-        threading.Thread(target=self._reader, daemon=True).start()
+        self._closed = False
         self.seq = 0
+        atexit.register(self.close)
+        threading.Thread(target=self._reader, daemon=True).start()
 
     def _reader(self):
-        while True:
-            chunk = os.read(self.p.stdout.fileno(), 4096)
-            if not chunk:
-                self.q.put(None)
-                return
-            for f in self.dec.feed(chunk):
-                self.q.put(f)
+        try:
+            while True:
+                chunk = os.read(self.p.stdout.fileno(), 4096)
+                if not chunk:
+                    self.q.put(None)
+                    return
+                for f in self.dec.feed(chunk):
+                    self.q.put(f)
+        except (OSError, ValueError):
+            self.q.put(None)
 
     def send(self, msg_type: int, data: bytes = b"", reply_to: int = 0) -> int:
         self.seq = (self.seq % 255) + 1
@@ -135,10 +144,40 @@ class SshSerial:
         return None
 
     def close(self):
+        if self._closed:
+            return
+        self._closed = True
         try:
-            self.p.stdin.close()
-        finally:
-            self.p.terminate()
+            atexit.unregister(self.close)
+        except Exception:
+            pass
+        try:
+            if self.p.stdin and not self.p.stdin.closed:
+                self.p.stdin.close()
+        except (BrokenPipeError, OSError, ValueError):
+            pass
+        if self.p.poll() is None:
+            try:
+                self.p.terminate()
+            except OSError:
+                pass
+            try:
+                self.p.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                try:
+                    self.p.kill()
+                except OSError:
+                    pass
+                try:
+                    self.p.wait(timeout=2)
+                except subprocess.TimeoutExpired:
+                    pass
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        self.close()
 
 
 def fmt(f):
@@ -180,30 +219,27 @@ def decode_value(kind, raw: bytes):
 
 
 def cmd_pic_read(args):
-    s = SshSerial(PIC32_TTY)
     keys = [int(k, 16) for k in args.keys] or list(PIC_KEYS)
-    for k in keys:
-        r = s.request(0x02, struct.pack(">H", k))
-        kind, name = PIC_KEYS.get(k, ("u16", "?"))
-        if r is None:
-            print(f"{k:04x} {name:28s} (no reply)")
-        else:
-            print(f"{k:04x} {name:28s} raw={r['data'].hex():20s} ~ {decode_value(kind, r['data'])}")
-    s.close()
+    with SshSerial(PIC32_TTY) as s:
+        for k in keys:
+            r = s.request(0x02, struct.pack(">H", k))
+            kind, name = PIC_KEYS.get(k, ("u16", "?"))
+            if r is None:
+                print(f"{k:04x} {name:28s} (no reply)")
+            else:
+                print(f"{k:04x} {name:28s} raw={r['data'].hex():20s} ~ {decode_value(kind, r['data'])}")
 
 
 def cmd_watchdog(args):
-    s = SshSerial(PIC32_TTY)
-    r = s.request(0x04, struct.pack(">HH", 0x4003, args.seconds))
+    with SshSerial(PIC32_TTY) as s:
+        r = s.request(0x04, struct.pack(">HH", 0x4003, args.seconds))
     print(fmt(r) if r else "no reply (the write may still have landed)")
-    s.close()
 
 
 def cmd_pic_raw(args):
-    s = SshSerial(PIC32_TTY)
-    r = s.request(int(args.type, 16), bytes.fromhex(args.data))
+    with SshSerial(PIC32_TTY) as s:
+        r = s.request(int(args.type, 16), bytes.fromhex(args.data))
     print(fmt(r) if r else "no reply")
-    s.close()
 
 
 # --- cVEND -----------------------------------------------------------------
@@ -213,21 +249,19 @@ CARD_FUNCS = {"vdvka": 4, "mifare": 5, "iso": 6, "desfire": 7,
 
 
 def cmd_cvend_version(args):
-    s = SshSerial(CVEND_TTY)
-    r = s.request(0x02)
+    with SshSerial(CVEND_TTY) as s:
+        r = s.request(0x02)
     print(fmt(r) if r else "no reply")
     if r:
         print(r["data"].decode(errors="replace"))
-    s.close()
 
 
 def cmd_beep(args):
-    s = SshSerial(CVEND_TTY)
     # Buzzer: >HH = (frequency Hz, duration ms), big-endian. Verified on hardware;
     # ~2700 Hz is loudest (piezo resonance), volume is not adjustable.
-    s.send(0x22, struct.pack(">HH", args.freq, args.ms))
-    time.sleep(args.ms / 1000 + 0.2)
-    s.close()
+    with SshSerial(CVEND_TTY) as s:
+        s.send(0x22, struct.pack(">HH", args.freq, args.ms))
+        time.sleep(args.ms / 1000 + 0.2)
 
 
 def _find_uid(d: bytes):
@@ -315,31 +349,30 @@ def cvend_wait_startup(s, timeout=75):
 
 def cmd_cvend_watch(args):
     """Enable card functions and print every frame the reader sends."""
-    s = SshSerial(CVEND_TTY)
-    if args.reset or args.wait_startup:
-        print("restarting reader (0x10 02) and waiting for 0x0F startup ...")
-        s.send(0x10, b"\x02")  # subcode 2 = restart app -> 0x0F Startup (bare 0x10 wedges it)
-        print("startup seen" if cvend_wait_startup(s) else "no startup (continuing)")
-    cvend_enable(s, args.enable)
-    print("--- tap a card ---")
-    last_status = 0
-    try:
-        while True:
-            if time.time() - last_status > 5:  # keep the reader awake
-                s.send(0x04)
-                last_status = time.time()
-            f = s.recv(1.0)
-            if f is None:
-                if s.p.poll() is not None:
-                    break
-                continue
-            if f["type"] in (0x05, 0x07) and not args.verbose:
-                continue
-            g = decode_event(f)
-            print(fmt(f) + (f"\n    -> {g}" if g else ""))
-    except KeyboardInterrupt:
-        pass
-    s.close()
+    with SshSerial(CVEND_TTY) as s:
+        if args.reset or args.wait_startup:
+            print("restarting reader (0x10 02) and waiting for 0x0F startup ...")
+            s.send(0x10, b"\x02")  # subcode 2 = restart app -> 0x0F Startup (bare 0x10 wedges it)
+            print("startup seen" if cvend_wait_startup(s) else "no startup (continuing)")
+        cvend_enable(s, args.enable)
+        print("--- tap a card ---")
+        last_status = 0
+        try:
+            while True:
+                if time.time() - last_status > 5:  # keep the reader awake
+                    s.send(0x04)
+                    last_status = time.time()
+                f = s.recv(1.0)
+                if f is None:
+                    if s.p.poll() is not None:
+                        break
+                    continue
+                if f["type"] in (0x05, 0x07) and not args.verbose:
+                    continue
+                g = decode_event(f)
+                print(fmt(f) + (f"\n    -> {g}" if g else ""))
+        except KeyboardInterrupt:
+            print("\nreader watch stopped")
 
 
 # --- cVEND file operations -------------------------------------------------
@@ -388,48 +421,44 @@ def cvend_fileinfo(s, path, off=0, length=0):
 
 
 def cmd_cvend_finfo(args):
-    s = SshSerial(CVEND_TTY)
-    info = cvend_fileinfo(s, args.path)
+    with SshSerial(CVEND_TTY) as s:
+        info = cvend_fileinfo(s, args.path)
     if info is None:
         print("(no reply / short reply)")
     else:
         st, size, crc = info
         print(f"status={st:#04x}  size={size}  crc32={crc:#010x}")
-    s.close()
 
 
 def cmd_cvend_ls(args):
-    s = SshSerial(CVEND_TTY)
-    rows = cvend_filelist(s, args.path)
+    with SshSerial(CVEND_TTY) as s:
+        rows = cvend_filelist(s, args.path)
     if rows is None:
         print("(no reply: not a directory, a plain file, or reader busy)")
     else:
         for name, mtime in rows:
             print(f"{mtime}  {name}")
-    s.close()
 
 
 def cmd_cvend_cat(args):
     # Read the whole file: 0x98 returns one frame per call (up to --count bytes),
     # so loop from the offset until a short frame marks the end.
-    s = SshSerial(CVEND_TTY)
     out = bytearray()
     offset = args.offset
-    data = cvend_getfile(s, args.path, offset, args.count)
-    if data is None:
-        s.close()
-        print("(no reply)")
-        return
-    while data:
-        out += data
-        offset += len(data)
-        if len(data) < args.count:
-            break
+    with SshSerial(CVEND_TTY) as s:
         data = cvend_getfile(s, args.path, offset, args.count)
         if data is None:
-            print(f"(partial: no reply after {len(out)} bytes at offset {offset})", file=sys.stderr)
-            break
-    s.close()
+            print("(no reply)")
+            return
+        while data:
+            out += data
+            offset += len(data)
+            if len(data) < args.count:
+                break
+            data = cvend_getfile(s, args.path, offset, args.count)
+            if data is None:
+                print(f"(partial: no reply after {len(out)} bytes at offset {offset})", file=sys.stderr)
+                break
     if args.hex:
         print(bytes(out).hex())
     else:
@@ -443,13 +472,12 @@ def cmd_cvend_restart(args):
     power cycle: ~6 s later the reader emits 0x0F Startup and is back in its fresh
     post-boot scanning state. Bare 0x10 (no subcode) instead wedges it, so always
     send the subcode."""
-    s = SshSerial(CVEND_TTY)
     print("restarting reader app (0x10 02) ...")
-    s.send(0x10, b"\x02")                 # subcode 2 = restart application
-    ok = cvend_wait_startup(s, timeout=20)
+    with SshSerial(CVEND_TTY) as s:
+        s.send(0x10, b"\x02")                 # subcode 2 = restart application
+        ok = cvend_wait_startup(s, timeout=20)
     print("0x0F Startup seen, reader restarted, scanning fresh"
           if ok else "no 0x0F within 20s (rare; if unresponsive, power-cycle)")
-    s.close()
 
 
 # --- audio (ALSA speaker) --------------------------------------------------
@@ -471,24 +499,22 @@ PA_ENABLE_KEY = 0x07E0   # PIC32 audio power-amp master enable: 1 = on, 0 = off
 
 def _pic_set_amp(enable: bool):
     """Switch the external audio power amp on/off via PIC32 ValueWrite 0x07E0."""
-    s = SshSerial(PIC32_TTY)
-    s.request(0x04, struct.pack(">H", PA_ENABLE_KEY) + bytes([1 if enable else 0]))
-    s.close()
+    with SshSerial(PIC32_TTY) as s:
+        s.request(0x04, struct.pack(">H", PA_ENABLE_KEY) + bytes([1 if enable else 0]))
 
 
 def cmd_amp(args):
-    s = SshSerial(PIC32_TTY)
-    if args.state == "status":
-        r = s.request(0x02, struct.pack(">H", PA_ENABLE_KEY))
-        if r is None:
-            print("no reply")
+    with SshSerial(PIC32_TTY) as s:
+        if args.state == "status":
+            r = s.request(0x02, struct.pack(">H", PA_ENABLE_KEY))
+            if r is None:
+                print("no reply")
+            else:
+                on = int.from_bytes(r["data"][2:], "big")
+                print(f"amp {'on' if on else 'off'} (0x07e0={on})")
         else:
-            on = int.from_bytes(r["data"][2:], "big")
-            print(f"amp {'on' if on else 'off'} (0x07e0={on})")
-    else:
-        s.request(0x04, struct.pack(">H", PA_ENABLE_KEY) + bytes([1 if args.state == "on" else 0]))
-        print(f"amp {args.state}")
-    s.close()
+            s.request(0x04, struct.pack(">H", PA_ENABLE_KEY) + bytes([1 if args.state == "on" else 0]))
+            print(f"amp {args.state}")
 
 
 def cmd_play(args):
@@ -500,37 +526,49 @@ def cmd_play(args):
     remote = "/tmp/pm3play-" + os.path.basename(args.file)
     opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR"]
-    if subprocess.run(["scp", "-O", *opts, args.file, f"root@{HOST}:{remote}"]).returncode:
-        print("scp failed", file=sys.stderr)
-        sys.exit(1)
-    setup = []
-    if not args.no_restore:
-        setup.append("alsactl -f /etc/asound.state restore >/dev/null 2>&1")
-    setup.append(f"amixer -c 0 sset 'LO Driver Gain' {args.lo_gain} >/dev/null")
-    setup.append(f"amixer -c 0 sset PCM {args.pcm}% >/dev/null")
-    for m in args.mixer or []:
-        name, _, val = m.partition("=")
-        setup.append(f"amixer -c 0 sset '{name}' '{val}' >/dev/null")
-    # Show the resulting level: PCM percent is very non-linear here (0 dB is ~73%,
-    # 15% is about -50 dB / inaudible), so print the actual dB before playing.
-    setup.append("printf 'PCM level: '; amixer -c 0 sget PCM | grep -i 'playback.*dB' | head -1")
-    # aplay's own exit status is what we return; clean up the temp file either way.
-    cmd = "; ".join(setup) + f"; aplay {remote}; rc=$?; "
-    if not args.keep:
-        cmd += f"rm -f {remote}; "
-    sys.exit(ssh(cmd + "exit $rc"))
+    try:
+        if subprocess.run(["scp", "-O", *opts, args.file, f"root@{HOST}:{remote}"]).returncode:
+            print("scp failed", file=sys.stderr)
+            sys.exit(1)
+        setup = []
+        if not args.no_restore:
+            setup.append("alsactl -f /etc/asound.state restore >/dev/null 2>&1")
+        setup.append(f"amixer -c 0 sset 'LO Driver Gain' {args.lo_gain} >/dev/null")
+        setup.append(f"amixer -c 0 sset PCM {args.pcm}% >/dev/null")
+        for m in args.mixer or []:
+            name, _, val = m.partition("=")
+            setup.append(f"amixer -c 0 sset '{name}' '{val}' >/dev/null")
+        # Show the resulting level: PCM percent is very non-linear here (0 dB is ~73%,
+        # 15% is about -50 dB / inaudible), so print the actual dB before playing.
+        setup.append("printf 'PCM level: '; amixer -c 0 sget PCM | grep -i 'playback.*dB' | head -1")
+        # aplay's own exit status is what we return; clean up the temp file either way.
+        cmd = "; ".join(setup) + f"; aplay {remote}; rc=$?; "
+        if not args.keep:
+            cmd += f"rm -f {remote}; "
+        sys.exit(ssh(cmd + "exit $rc"))
+    except KeyboardInterrupt:
+        if not args.keep:
+            # The local ssh/scp was interrupted; try to remove the upload. Do not
+            # let a second interrupt or a dead connection hide the original exit.
+            try:
+                subprocess.run(["ssh", *opts, f"root@{HOST}", f"rm -f {remote}"],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                               timeout=5)
+            except Exception:
+                pass
+        raise
 
 
 # --- system ----------------------------------------------------------------
 
 def cmd_nx_stop(args):
-    # Order matters: stop nx, then kill the watchdog before it powers us off.
-    # NxExe is in PATH (/usr/bin); disable the watchdog via IPP as a fallback so
-    # this never leaves the unit counting down to poweroff.
-    rc = ssh("systemctl stop nx; systemctl stop init-abtproxy; NxExe watchdog 0 2>/dev/null")
-    s = SshSerial(PIC32_TTY)
-    s.request(0x04, struct.pack(">HH", 0x4003, 0))  # ValueWrite watchdog timeout = 0
-    s.close()
+    # Ask nx to disable the watchdog first, while nx is still running and owns
+    # the PIC32 port. If this is interrupted, the unit is either still running nx
+    # or already has the watchdog off. The IPP write below is a fallback and is
+    # only opened after nx has stopped.
+    rc = ssh("NxExe watchdog 0 2>/dev/null; systemctl stop nx; systemctl stop init-abtproxy")
+    with SshSerial(PIC32_TTY) as s:
+        s.request(0x04, struct.pack(">HH", 0x4003, 0))  # ValueWrite watchdog timeout = 0
     sys.exit(rc)
 
 
@@ -592,7 +630,7 @@ def main():
     p.add_argument("--wait-startup", action="store_true",
                    help="wait for the reader's 0x0F boot frame before enabling (use right after power-on)")
     p.add_argument("--reset", action="store_true",
-                   help="restart the reader (0x10 02) and wait for its 0x0F startup, then enable (reliable cold arm)")
+                   help="restart the reader (0x10 02) and wait for its 0x0F startup, then enable")
     p.set_defaults(fn=cmd_cvend_watch)
 
     sp.add_parser("cvend-restart", help="clean software restart of the reader app (0x10 02); wakes a slept reader").set_defaults(fn=cmd_cvend_restart)
@@ -612,7 +650,11 @@ def main():
 
     args = ap.parse_args()
     HOST = args.host
-    args.fn(args)
+    try:
+        args.fn(args)
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        sys.exit(130)
 
 
 if __name__ == "__main__":

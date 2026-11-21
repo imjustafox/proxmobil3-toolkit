@@ -31,10 +31,12 @@ outside this tree). After a run with cleanup we are locked out (stock restored),
 so pull the dongle before returning the unit. Reader file-ops reuse pm3.py (same directory).
 """
 import argparse
+import contextlib
 import gzip
 import hashlib
 import os
 import shutil
+import signal
 import subprocess
 import sys
 import time
@@ -58,6 +60,38 @@ def sh(host, cmd, timeout=90):
 def reachable(host):
     return subprocess.run(SSH + [f"root@{host}", "true"],
                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
+
+
+def _terminate(p):
+    """Stop a Popen child, escalating from terminate to kill. Cleanup must finish,
+    so a second interrupt during the wait is swallowed."""
+    if p is None or p.poll() is not None:
+        return
+    try:
+        p.terminate()
+    except OSError:
+        return
+    try:
+        p.wait(timeout=2)
+    except BaseException:
+        try:
+            p.kill()
+        except OSError:
+            pass
+        try:
+            p.wait(timeout=2)
+        except BaseException:
+            pass
+
+
+@contextlib.contextmanager
+def _ignore_sigint():
+    """Let a cleanup step finish even if the operator presses Ctrl-C again."""
+    old = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, old)
 
 
 # ---- 1. identify -----------------------------------------------------------
@@ -147,46 +181,69 @@ def dongle_disks(host, disks, marker=".pm3-nodump"):
 def dump_block(host, dev, outpath):
     """Stream `dd if=/dev/<dev>` over ssh -> gzip locally.
 
-    Returns (sha256, bytes), or (None, bytes) if dd failed or read nothing (in
-    which case the empty .gz is removed so it can't look like a real capture)."""
+    Returns (sha256, bytes), or (None, bytes) if dd failed or read nothing. A
+    partial .gz is removed on failure or interrupt so it cannot look like a real
+    capture."""
     log(f"dumping /dev/{dev} -> {os.path.basename(outpath)} (streaming dd|gzip)")
-    p = subprocess.Popen(SSH + [f"root@{host}", f"dd if=/dev/{dev} bs=1M"],
-                         stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    p = None
+    ok = False
     h = hashlib.sha256()
     total = 0
-    with gzip.open(outpath, "wb", compresslevel=3) as gz:
-        while True:
-            chunk = p.stdout.read(1 << 20)
-            if not chunk:
-                break
-            h.update(chunk)
-            gz.write(chunk)
-            total += len(chunk)
-    rc = p.wait()
-    if rc != 0 or total == 0:
-        log(f"  {dev}: FAILED (dd rc={rc}, {total} bytes), removing empty capture")
-        try:
-            os.remove(outpath)
-        except OSError:
-            pass
-        return None, total
-    log(f"  {dev}: {total:,} bytes  sha256={h.hexdigest()}")
-    return h.hexdigest(), total
+    try:
+        p = subprocess.Popen(SSH + [f"root@{host}", f"dd if=/dev/{dev} bs=1M"],
+                             stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        with gzip.open(outpath, "wb", compresslevel=3) as gz:
+            while True:
+                chunk = p.stdout.read(1 << 20)
+                if not chunk:
+                    break
+                h.update(chunk)
+                gz.write(chunk)
+                total += len(chunk)
+        rc = p.wait()
+        if rc != 0 or total == 0:
+            log(f"  {dev}: FAILED (dd rc={rc}, {total} bytes), removing empty capture")
+            return None, total
+        ok = True
+        log(f"  {dev}: {total:,} bytes  sha256={h.hexdigest()}")
+        return h.hexdigest(), total
+    finally:
+        _terminate(p)
+        if not ok:
+            try:
+                os.remove(outpath)
+            except OSError:
+                pass
 
 
 # ---- 4. provisioning archives ---------------------------------------------
 
 def copy_archives(host, outdir):
     dst = os.path.join(outdir, "host-archive")
+    created = not os.path.isdir(dst)
     os.makedirs(dst, exist_ok=True)
     log("copying /init/efad/data/archive -> host-archive/")
-    p1 = subprocess.Popen(SSH + [f"root@{host}", "tar -C /init/efad/data/archive -cf - . 2>/dev/null"],
-                          stdout=subprocess.PIPE)
-    p2 = subprocess.Popen(["tar", "-xf", "-", "-C", dst], stdin=p1.stdout)
-    p1.stdout.close()
-    p2.wait()
-    p1.wait()
-    return sorted(os.listdir(dst))
+    p1 = p2 = None
+    try:
+        p1 = subprocess.Popen(SSH + [f"root@{host}", "tar -C /init/efad/data/archive -cf - . 2>/dev/null"],
+                              stdout=subprocess.PIPE)
+        p2 = subprocess.Popen(["tar", "-xf", "-", "-C", dst], stdin=p1.stdout)
+        p1.stdout.close()
+        p2.wait()
+        p1.wait()
+        return sorted(os.listdir(dst))
+    except BaseException:
+        _terminate(p2)
+        _terminate(p1)
+        if created:
+            shutil.rmtree(dst, ignore_errors=True)
+        raise
+    finally:
+        if p1 is not None and p1.stdout is not None:
+            try:
+                p1.stdout.close()
+            except OSError:
+                pass
 
 
 # ---- 5. reader firmware (from the host archive) ----------------------------
@@ -197,16 +254,22 @@ def unpack_reader_fw(outdir):
     if not os.path.isfile(c72):
         log("no V0200.C72 in host-archive, skipping reader firmware")
         return None
+    created = not os.path.isdir(rf)
     os.makedirs(rf, exist_ok=True)
-    log("unpacking cVEND reader firmware from V0200.C72")
-    subprocess.run(["unzip", "-o", "-q", c72, "-d", rf], check=False)
-    app = os.path.join(rf, "feig", "app0", "update.tar.gz")
-    if os.path.isfile(app):
-        ex = os.path.join(rf, "app0-extracted")
-        os.makedirs(ex, exist_ok=True)
-        subprocess.run(["tar", "-xzf", app, "-C", ex], check=False)
-    av = os.path.join(rf, "feig", "app0", "version")
-    return open(av).read().strip() if os.path.isfile(av) else None
+    try:
+        log("unpacking cVEND reader firmware from V0200.C72")
+        subprocess.run(["unzip", "-o", "-q", c72, "-d", rf], check=False)
+        app = os.path.join(rf, "feig", "app0", "update.tar.gz")
+        if os.path.isfile(app):
+            ex = os.path.join(rf, "app0-extracted")
+            os.makedirs(ex, exist_ok=True)
+            subprocess.run(["tar", "-xzf", app, "-C", ex], check=False)
+        av = os.path.join(rf, "feig", "app0", "version")
+        return open(av).read().strip() if os.path.isfile(av) else None
+    except BaseException:
+        if created:
+            shutil.rmtree(rf, ignore_errors=True)
+        raise
 
 
 # ---- 6. live reader config (over the serial, via pm3.py) -------------------
@@ -310,64 +373,82 @@ def main():
     ap.add_argument("--no-cleanup", action="store_true", help="leave our ssh access in place")
     a = ap.parse_args()
     host = a.host
+    access = False
 
-    if not reachable(host):
-        log(f"cannot ssh root@{host}; is the unit booted with the [TestMode] dongle inserted?")
-        sys.exit(1)
+    try:
+        if not reachable(host):
+            log(f"cannot ssh root@{host}; is the unit booted with the [TestMode] dongle inserted?")
+            sys.exit(1)
+        access = True
 
-    serial, part, mac = identify(host)
-    outdir = os.path.join(a.out, f"unit{serial}")
-    os.makedirs(outdir, exist_ok=True)
-    log(f"unit serial={serial} part={part} mac={mac}")
-    log(f"output -> {outdir}")
+        serial, part, mac = identify(host)
+        outdir = os.path.join(a.out, f"unit{serial}")
+        os.makedirs(outdir, exist_ok=True)
+        log(f"unit serial={serial} part={part} mac={mac}")
+        log(f"output -> {outdir}")
 
-    hardware_scan(host, outdir)
+        hardware_scan(host, outdir)
 
-    all_disks = list_disks(host)
-    skip = dongle_disks(host, all_disks)
-    log("disks: " + ", ".join(f"{n} ({sz:,}B{', dongle' if n in skip else ''})"
-                              for n, sz in all_disks))
+        all_disks = list_disks(host)
+        skip = dongle_disks(host, all_disks)
+        log("disks: " + ", ".join(f"{n} ({sz:,}B{', dongle' if n in skip else ''})"
+                                  for n, sz in all_disks))
 
-    sums = {}
-    disks = []   # (name, size, status) for SUMMARY.md
-    for name, size in all_disks:   # smallest-first (list_disks sorts)
-        if a.no_dump:
-            disks.append((name, size, "not dumped (--no-dump)"))
-            continue
-        if name in skip:
-            log(f"skipping /dev/{name}: .pm3-nodump marker (boot dongle)")
-            disks.append((name, size, "skipped: .pm3-nodump marker (dongle)"))
-            continue
-        free = shutil.disk_usage(outdir).free
-        if size > free:
-            log(f"skipping /dev/{name}: {size:,} B > {free:,} B free in {a.out}")
-            disks.append((name, size, f"skipped: too large ({size:,} B > {free:,} B free)"))
-            continue
-        sha, total = dump_block(host, name, os.path.join(outdir, f"{name}.img.gz"))
-        if sha is None:
-            disks.append((name, size, "FAILED: dd error / empty"))
+        sums = {}
+        disks = []   # (name, size, status) for SUMMARY.md
+        for name, size in all_disks:   # smallest-first (list_disks sorts)
+            if a.no_dump:
+                disks.append((name, size, "not dumped (--no-dump)"))
+                continue
+            if name in skip:
+                log(f"skipping /dev/{name}: .pm3-nodump marker (boot dongle)")
+                disks.append((name, size, "skipped: .pm3-nodump marker (dongle)"))
+                continue
+            free = shutil.disk_usage(outdir).free
+            if size > free:
+                log(f"skipping /dev/{name}: {size:,} B > {free:,} B free in {a.out}")
+                disks.append((name, size, f"skipped: too large ({size:,} B > {free:,} B free)"))
+                continue
+            sha, total = dump_block(host, name, os.path.join(outdir, f"{name}.img.gz"))
+            if sha is None:
+                disks.append((name, size, "FAILED: dd error / empty"))
+            else:
+                sums[f"{name}.img.gz"] = sha
+                disks.append((name, size, f"captured {total:,} B -> {name}.img.gz"))
+
+        archives = copy_archives(host, outdir)
+        reader_ver = unpack_reader_fw(outdir)
+
+        if not a.no_reader:
+            try:
+                reader_live(host, outdir)
+            except Exception as e:
+                log(f"reader-live skipped ({e})")
+
+        write_summary(outdir, serial, part, mac, host, disks, sums, archives, reader_ver)
+        log(f"capture complete -> {outdir}")
+
+        if a.no_cleanup:
+            log("--no-cleanup: our SSH access is still on the unit.")
         else:
-            sums[f"{name}.img.gz"] = sha
-            disks.append((name, size, f"captured {total:,} B -> {name}.img.gz"))
-
-    archives = copy_archives(host, outdir)
-    reader_ver = unpack_reader_fw(outdir)
-
-    if not a.no_reader:
-        try:
-            reader_live(host, outdir)
-        except Exception as e:
-            log(f"reader-live skipped ({e})")
-
-    write_summary(outdir, serial, part, mac, host, disks, sums, archives, reader_ver)
-    log(f"capture complete -> {outdir}")
-
-    if a.no_cleanup:
-        log("--no-cleanup: our SSH access is still on the unit.")
-    else:
-        cleanup(host)
-        log("cleanup done. We are now locked out (stock restored).")
-        log("Pull the mp_sd dongle before returning the unit; the next boot is then stock nx.")
+            with _ignore_sigint():
+                cleanup(host)
+            log("cleanup done. We are now locked out (stock restored).")
+            log("Pull the mp_sd dongle before returning the unit; the next boot is then stock nx.")
+    except KeyboardInterrupt:
+        log("interrupted")
+        if access and not a.no_cleanup:
+            log("restoring the unit to stock before exit ...")
+            try:
+                with _ignore_sigint():
+                    cleanup(host)
+            except Exception as e:
+                log(f"cleanup failed ({e}); the unit may still have SSH access")
+            else:
+                log("cleanup done. We are now locked out (stock restored).")
+        elif access:
+            log("--no-cleanup: our SSH access is still on the unit.")
+        sys.exit(130)
 
 
 if __name__ == "__main__":

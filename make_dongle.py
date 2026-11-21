@@ -29,6 +29,7 @@ Requirements: Python 3. macOS uses the built-in `diskutil`. Linux uses `lsblk`,
 `parted`, `mkfs.vfat` (dosfstools), `partprobe`/`udevadm` (util-linux), and `sudo`.
 """
 import argparse
+import contextlib
 import glob
 import json
 import os
@@ -36,6 +37,7 @@ import platform
 import plistlib
 import re
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -57,6 +59,16 @@ KEY_TYPES = {
 def die(msg):
     print(f"make_dongle: {msg}", file=sys.stderr)
     sys.exit(1)
+
+
+@contextlib.contextmanager
+def _ignore_sigint():
+    """Let a destructive format or cleanup step finish despite Ctrl-C."""
+    old = signal.signal(signal.SIGINT, signal.SIG_IGN)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, old)
 
 
 def run(cmd):
@@ -400,11 +412,15 @@ def main():
     if not args.yes:
         confirm_erase(disk)
 
-    mnt, cleanup = format_and_mount(disk)
+    cleanup = None
     try:
+        with _ignore_sigint():
+            mnt, cleanup = format_and_mount(disk)
         install_payload(mnt, keys_text, autorun_src)
     finally:
-        cleanup()
+        if cleanup is not None:
+            with _ignore_sigint():
+                cleanup()
 
     print(f"\nDone. {disk.ident} is ready.")
     print("Plug it into the dongle's USB-A port, power-cycle the unit, wait ~30s,")
@@ -412,4 +428,8 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        print("\ninterrupted", file=sys.stderr)
+        sys.exit(130)

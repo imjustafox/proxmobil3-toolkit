@@ -129,6 +129,12 @@ Flags:
 - `--no-dump`: scans and archives only, no big block images (step 3).
 - `--out <dir>`: output root. Defaults to `$PM3_DUMPS` or `~/Documents/pm3-dumps`.
 
+If you press Ctrl-C during a capture, `dump_unit.py` restores the unit to stock
+before exiting, the same cleanup as step 8, unless `--no-cleanup` is set. Partial
+`.img.gz` files and a newly created `host-archive/` are removed. The cleanup step
+ignores further Ctrl-C presses so it can finish. With `--no-cleanup`, an interrupt
+leaves SSH access in place and says so.
+
 The reader file ops reuse `pm3.py` from the same directory. The ssh calls skip
 host-key checks, so a unit that changed IP needs no `known_hosts` cleanup.
 

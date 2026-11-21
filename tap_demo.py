@@ -59,50 +59,48 @@ def render(uid: str, count: int) -> bytes:
 
 
 def draw_fb(buf: bytes):
-    p = subprocess.Popen(["ssh", "-o", "BatchMode=yes", f"root@{HOST}", "cat > /dev/fb0"],
-                         stdin=subprocess.PIPE)
-    p.communicate(buf)
+    subprocess.run(["ssh", "-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
+                    "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR",
+                    f"root@{HOST}", "cat > /dev/fb0"],
+                   input=buf, timeout=15)
 
 
 def main():
     print(f"connecting to {HOST} ...")
-    s = pm3.SshSerial(pm3.CVEND_TTY)
-    # Do not re-init the reader; that disrupts its autonomous post-boot scan.
-    # Just listen, and send a 0x04 status every ~1s so it never goes idle. It
-    # streams 0xBE frames (UID) for every tap, indefinitely. No nx, no keys.
-    draw_fb(render("tap a card", 0))
-    print("listening (1s keepalive, no re-init). tap a card (Ctrl-C to quit).")
-
-    count = 0
-    last_uid = None
-    last_t = 0.0
-    last_status = 0.0
-    try:
-        while True:
-            if time.time() - last_status > 1.0:
-                s.send(0x04)             # steady keepalive keeps scanning alive
-                last_status = time.time()
-            f = s.recv(0.4)
-            # Only 0xBE (UnhandledCard) carries a tap's UID in this no-init mode.
-            # Gate on the frame type, never on "a 0x04 byte appeared": 0xD1/0xED
-            # frames carry 0x04 bytes too and would phantom-read (see INTERFACE.md, NFC).
-            if not f or f["type"] != 0xBE:
-                continue
-            uid = pm3._find_uid(f["data"])
-            if not uid:
-                continue
-            # debounce: same card within 2s is one tap
-            if uid == last_uid and time.time() - last_t < 2.0:
-                continue
-            count += 1
-            last_uid, last_t = uid, time.time()
-            print(f"tap #{count}: {uid}  (frame {f['type']:02x})")
-            s.send(0x22, struct.pack(">HH", 1800, 35))  # tiny 35ms chirp (quiet; not nx's loud tone)
-            draw_fb(render(uid, count))
-    except KeyboardInterrupt:
-        print("\nbye")
-    finally:
-        s.close()
+    with pm3.SshSerial(pm3.CVEND_TTY) as s:
+        # Do not re-init the reader; that disrupts its autonomous post-boot scan.
+        # Just listen, and send a 0x04 status every ~1s so it never goes idle. It
+        # streams 0xBE frames (UID) for every tap, indefinitely. No nx, no keys.
+        count = 0
+        last_uid = None
+        last_t = 0.0
+        last_status = 0.0
+        try:
+            draw_fb(render("tap a card", 0))
+            print("listening (1s keepalive, no re-init). tap a card (Ctrl-C to quit).")
+            while True:
+                if time.time() - last_status > 1.0:
+                    s.send(0x04)             # steady keepalive keeps scanning alive
+                    last_status = time.time()
+                f = s.recv(0.4)
+                # Only 0xBE (UnhandledCard) carries a tap's UID in this no-init mode.
+                # Gate on the frame type, never on "a 0x04 byte appeared": 0xD1/0xED
+                # frames carry 0x04 bytes too and would phantom-read (see INTERFACE.md, NFC).
+                if not f or f["type"] != 0xBE:
+                    continue
+                uid = pm3._find_uid(f["data"])
+                if not uid:
+                    continue
+                # debounce: same card within 2s is one tap
+                if uid == last_uid and time.time() - last_t < 2.0:
+                    continue
+                count += 1
+                last_uid, last_t = uid, time.time()
+                print(f"tap #{count}: {uid}  (frame {f['type']:02x})")
+                s.send(0x22, struct.pack(">HH", 1800, 35))  # tiny 35ms chirp (quiet; not nx's loud tone)
+                draw_fb(render(uid, count))
+        except KeyboardInterrupt:
+            print("\nbye")
 
 
 if __name__ == "__main__":
