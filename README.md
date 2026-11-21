@@ -42,9 +42,8 @@ cards and barcodes, driving the screen, buzzer, and sensors.
   `docs/capturing-a-unit.md`.
 - `os-build/`: the device's kernel config, for building a custom OS image.
 
-Storage dumps (device images containing the agency's production secrets) land
-outside this repo by default, in `~/Documents/pm3-dumps`. See the note at the
-bottom.
+Storage dumps (device images) land outside this repo by default, in
+`~/Documents/pm3-dumps`.
 
 ## Quick start
 
@@ -131,19 +130,79 @@ It power-cycles and comes back; it does not stay off. nx feeds it. If you stop n
 disable it with `./pm3.py watchdog 0`. See `INTERFACE.md` section PIC32 for the
 reboot-versus-power-off detail.
 
+## pm3.py command reference
+
+The general form is:
+
+```sh
+./pm3.py --host <unit-ip> <command> [args]
+```
+
+`--host` must come before the command. If omitted, `PM3_HOST` is used, then the
+default address in the script.
+
+### System
+
+- `info` prints the kernel, uptime, memory, filesystems, active services, and the
+  serial and framebuffer devices.
+- `blank-screen` stops the fbcon cursor from blinking and writes zeros to
+  `/dev/fb0`. The screen stays black until something redraws it. `nx-start`
+  redraws the stock UI.
+- `nx-stop` asks nx to disable the PIC32 watchdog, then stops nx and abtproxy. It
+  writes the watchdog value over IPP afterward as a fallback.
+- `nx-start` starts abtproxy and then the stock nx UI. Expect the validator screen
+  and possibly a startup beep.
+
+### PIC32
+
+- `pic-read [key ...]` reads PIC32 values. With no keys it prints every known key.
+  Keys are hex, for example `5040` for input voltage in mV, `504f` for the 3V3
+  rail, `c000` for the PIC32 firmware string, and `07e0` for the audio amp state.
+- `watchdog <seconds>` sets the PIC32 watchdog timeout. `0` disables it. When the
+  timeout expires the unit reboots; it does not stay off.
+- `pic-raw <type> [hex-data]` sends a raw IPP frame to the PIC32. Read the
+  external EEPROM with `pic-raw 0a 10000000000080`, or the internal EEPROM with
+  `pic-raw 0a 18000000000080`.
+- `amp on|off|status` switches the external audio power amp through PIC32 key
+  `0x07E0`, or reads its current state. The amp is latched until the next
+  power-off.
+
+### cVEND reader
+
+- `cvend-version` prints the reader's version frame and decoded identity string.
+- `cvend-watch` runs nx's enable handshake and prints reader events. By default it
+  enables every card type, which stops the autonomous base scan. Options:
+  `--enable <type ...>` limits the card types (`vdvka`, `mifare`, `iso`,
+  `desfire`, `girogo`, `itso`, `ultralightc`), `--wait-startup` waits for the
+  reader's `0x0F` boot frame first, `--reset` sends `0x10 02` and waits for a
+  fresh startup, and `-v` shows status and heartbeat frames. Ctrl-C exits
+  cleanly.
+- `cvend-restart` sends `0x10 02` (restart application) and waits up to 20 seconds
+  for the `0x0F` startup frame. If no startup arrives, the reader may need a
+  power cycle.
+- `cvend-ls <path>` lists a directory on the reader's own filesystem with the
+  `0xA4` FileList command.
+- `cvend-cat <path>` reads a file from the reader's filesystem with `0x98`
+  GetFile. Use `--offset` to start partway in, `--count` for bytes per frame
+  (default `0xF000`), and `--hex` to print hex instead of raw bytes.
+- `cvend-finfo <path>` requests file status, size, and CRC32 with `0x9C`
+  FileInfo. Some paths return no reply.
+- `beep --freq <Hz> --ms <ms>` sounds the cVEND piezo buzzer. About 2700 Hz is
+  loudest. Volume is not adjustable.
+
+### Audio
+
+- `play <file.wav>` copies a WAV to the unit, enables the PIC32 audio amp, restores
+  the stock ALSA routing, and plays the file with `aplay`. It works without nx.
+  Options: `--no-amp` leaves `0x07E0` alone, `--no-restore` skips `alsactl
+  restore`, `--pcm <percent>` sets playback volume (default 65), `--lo-gain
+  <0-35>` sets the Line-Out baseline (default 6, which is 0 dB), `--mixer
+  NAME=VAL` adds an `amixer` control, and `--keep` leaves the uploaded file on the
+  unit.
+
 ## References
 
 - `wiki.pm3.dev` and `kevin.wallace.seattle.wa.us/pm3`: the public PM3 pages.
 - Community projects: proxdongl3 (git.doof.net), rust-feig-app, PROXMobil3-HOP,
   haylinmoore/board (OneBusAway arrival board), proxbeacon.
 - `reports/` and `research_notes/`: FEIG/cVEND protocol research.
-
-## A note on secrets
-
-The device's backend config (`config.json`, `keys.json`) holds the transit
-agency's OAuth credentials and card-reading keys. Those live only in the storage
-dumps, which default to `~/Documents/pm3-dumps` outside this repo and are not
-published. `dumps/` is also git-ignored, so capturing in-tree with `--out ./dumps`
-is safe too. Using the credentials against the agency's systems, or the keys
-against cards that are not yours, would be unauthorized regardless of who owns the
-hardware. For your own projects, replace the backend (see `keyserver/`).
