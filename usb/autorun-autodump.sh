@@ -1,9 +1,10 @@
 #!/bin/sh
 # PROXmobil3 boot script: standalone access + a one-time auto-dump to this USB.
 # Does everything autorun.sh does (root SSH on, PIC32 watchdog off, nx left
-# stopped, .pm3-nodump marker) and then, on the first boot only, dd|gzips the
-# unit's internal disks to pm3-dump/ on the stick with sha256sums. Later boots
-# skip the dump once pm3-dump/device.sha256 exists.
+# stopped, .pm3-nodump marker) and then, on the first boot only, captures a
+# hardware scan, pulls the live cVEND reader config, and dd|gzips the unit's
+# internal disks to pm3-dump/ on the stick with sha256sums. Later boots skip the
+# dump once pm3-dump/device.sha256 exists.
 # Install it with: make_dongle.py --autodump
 HERE=$(cd "$(dirname "$0")" && pwd)
 LOG="$HERE/pm3-autorun.log"
@@ -39,7 +40,45 @@ if [ -f "$DUMP/device.sha256" ]; then
 else
   mkdir -p "$DUMP"
   strings /sys/bus/i2c/devices/2-0050/eeprom 2>/dev/null | head -1 > "$DUMP/serial.txt"
-  { uname -a; echo; cat /proc/partitions; } > "$DUMP/meta.txt"
+
+  # Hardware scan, same fields as dump_unit.py.
+  mount -t debugfs debugfs /sys/kernel/debug 2>/dev/null || true
+  {
+    echo "### uname"; uname -a
+    echo "### cmdline"; cat /proc/cmdline
+    echo "### dt-model"; cat /proc/device-tree/model; echo
+    tr "\0" " " < /proc/device-tree/compatible; echo
+    echo "### cpuinfo"; cat /proc/cpuinfo
+    echo "### partitions"; cat /proc/partitions
+    echo "### mtd"; cat /proc/mtd
+    echo "### blkid"; blkid 2>/dev/null
+    echo "### mount"; mount
+    echo "### df"; df -h 2>/dev/null
+    echo "### net"; ip addr 2>/dev/null | grep -E "inet |ether"
+    echo "### i2c-devices"; for d in /sys/bus/i2c/devices/*/name; do echo "$d: $(cat "$d")"; done 2>/dev/null
+    echo "### i2c-scan"; for b in 0 1 2; do echo "-- bus $b --"; i2cdetect -y -r "$b" 2>/dev/null; done
+    echo "### module-eeprom"; xxd /sys/bus/i2c/devices/2-0050/eeprom 2>/dev/null | head -8
+    echo "### lm75-temp"; cat /sys/class/hwmon/hwmon*/temp1_input 2>/dev/null
+    echo "### usb"; cat /sys/kernel/debug/usb/devices 2>/dev/null
+    echo "### serial-ports"; ls -la /dev/ttymxc* /dev/ttyUSB* 2>/dev/null
+    echo "### gpio"; cat /sys/kernel/debug/gpio 2>/dev/null
+    echo "### lsmod"; lsmod
+    echo "### enabled-services"; systemctl list-unit-files --state=enabled 2>/dev/null
+    echo "### os-release"; cat /etc/os-release 2>/dev/null
+    echo "### uboot-env"; fw_printenv 2>/dev/null || echo "(no fw_printenv; env is in mtdblock0.img.gz)"
+  } > "$DUMP/hwscan.txt"
+  dmesg > "$DUMP/dmesg.txt" 2>/dev/null
+
+  # Live cVEND reader pull. The helper configures the tty itself.
+  [ -f "$HERE/cvendpull" ] && chmod +x "$HERE/cvendpull" 2>/dev/null
+  if [ -x "$HERE/cvendpull" ]; then
+    mkdir -p "$DUMP/reader-live"
+    echo "pulling reader live config -> reader-live/"
+    "$HERE/cvendpull" "$DUMP/reader-live" >> "$LOG" 2>&1 || echo "reader-live pull failed"
+  else
+    echo "cvendpull helper missing; skipping reader-live"
+  fi
+
   STICK=$(mount | grep "$HERE" | head -1 | cut -d' ' -f1)   # e.g. /dev/sdc1 (do not dump this)
   : > "$DUMP/device.sha256"
   for dev in mtdblock0 sda sdb sdc sdd sde; do

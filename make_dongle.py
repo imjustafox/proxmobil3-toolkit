@@ -359,10 +359,16 @@ def choose_autorun(args):
 def install_payload(mnt, keys_text, autorun_src):
     print(f"\ninstalling payload -> {mnt}")
     shutil.copy(autorun_src, os.path.join(mnt, "autorun.sh"))
+    helper = os.path.join(USB_DIR, "cvendpull")
+    if os.path.isfile(helper):
+        shutil.copy2(helper, os.path.join(mnt, "cvendpull"))
+        os.chmod(os.path.join(mnt, "cvendpull"), 0o755)
+    else:
+        print("  note: usb/cvendpull missing; autodump will skip the reader-live pull")
     with open(os.path.join(mnt, "authorized_keys"), "w") as f:
         f.write(keys_text)
     open(os.path.join(mnt, ".pm3-nodump"), "w").close()
-    print(f"  autorun.sh ({os.path.basename(autorun_src)}), authorized_keys, .pm3-nodump written")
+    print(f"  autorun.sh ({os.path.basename(autorun_src)}), cvendpull, authorized_keys, .pm3-nodump written")
     if IS_MAC:
         # Keep the FAT stick clean: tell Spotlight not to index it (also avoids the
         # indexer blocking the eject) and drop the ._ AppleDouble sidecar files.
@@ -405,8 +411,8 @@ def main():
 
     if args.dry_run:
         print(f"\n[dry-run] would format {disk.ident} ({disk.size/1e9:.1f} GB) as "
-              f"MBR/FAT32 'MP_SD' and write autorun.sh ({variant}) + authorized_keys "
-              f"({len(keys)} key(s)) + .pm3-nodump. No changes made.")
+              f"MBR/FAT32 'MP_SD' and write autorun.sh ({variant}) + cvendpull + "
+              f"authorized_keys ({len(keys)} key(s)) + .pm3-nodump. No changes made.")
         return
 
     if not args.yes:

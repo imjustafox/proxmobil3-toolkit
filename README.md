@@ -33,11 +33,12 @@ cards and barcodes, driving the screen, buzzer, and sensors.
   This is how the reader protocol was captured.
 - `keyserver/`: a small HTTP server that replaces the device's cloud backend
   locally, so the stock app can run offline.
-- `usb/`: boot script that installs SSH access through the dongle EEPROM.
+- `usb/`: boot script that installs SSH access through the dongle EEPROM. The
+  auto-dump variant also captures a hardware scan and the live reader config.
 - `make_dongle.py`: prepares the access USB on macOS or Linux. Formats the stick
-  (MBR/FAT32/`MP_SD`) and copies `autorun.sh`, your SSH key(s), and the
-  `.pm3-nodump` marker. Keys can come from a local `.pub`, an https URL, a GitHub
-  username, or `~/.ssh`.
+  (MBR/FAT32/`MP_SD`) and copies `autorun.sh`, your SSH key(s), the
+  `.pm3-nodump` marker, and the reader-pull helper used by the auto-dump variant.
+  Keys can come from a local `.pub`, an https URL, a GitHub username, or `~/.ssh`.
 - `dump_unit.py`: one command for a full, checksummed capture of a unit (storage,
   hardware scan, provisioning archives, cVEND reader firmware, live reader config)
   to `~/Documents/pm3-dumps/unit<SERIAL>/`, then restores the unit to stock. See

@@ -143,10 +143,12 @@ host-key checks, so a unit that changed IP needs no `known_hosts` cleanup.
 If you built the dongle with the auto-dump autorun (`make_dongle.py --autodump`,
 or `usb/autorun-autodump.sh` copied on by hand), its first boot captures the
 unit's internal disks and metadata to `pm3-dump/` on the stick, with sha256sums in
-`pm3-dump/device.sha256`. Later boots skip it. That is a hands-off fallback and a
-record of every unit the dongle has booted. `dump_unit.py` is still the fuller,
-checksummed capture: it also pulls the reader firmware and live config, and it
-cleans up. The plain `autorun.sh` does not dump anything.
+`pm3-dump/device.sha256`. It also writes `hwscan.txt`, `dmesg.txt`, and a
+`reader-live/` pull of the cVEND reader (version, directory listings, config,
+EMV counter, and Girogo persdata). Later boots skip it. That is a hands-off
+fallback and a record of every unit the dongle has booted. `dump_unit.py` is still
+the fuller capture: it also pulls the reader firmware archive, writes a manifest,
+and cleans up. The plain `autorun.sh` does not dump anything.
 
 ---
 
