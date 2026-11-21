@@ -77,7 +77,7 @@ The cVEND reader scans for ISO14443 cards continuously and indefinitely once its
 own firmware has booted. It pushes a frame for each card it sees. No keys, no nx,
 and no reader initialization are needed to get a card's UID.
 
-Recipe (what `tap_demo.py` and `pm3.py cvend-watch` do):
+Recipe (what `tap_demo.py` does — the keyless listen):
 
 1. Open `/dev/ttymxc3` at 115200 8N1 after the unit boots.
 2. Do not send the enable/init sequence. Initializing the reader (the `0xE4`
@@ -97,6 +97,11 @@ if the keepalive stops and the reader goes idle, wake its scan with a software
 restart — `./pm3.py cvend-restart` (`0x10 02`), which brings it back in ~6 s
 without a power cycle. (Bare `0x10` with no subcode wedges it; always send the
 subcode.)
+
+`pm3.py cvend-watch` is the opposite path: it runs nx's enable handshake (it
+enables all card types by default) to drive the reader's own card handlers
+(`0xD5`/`0xD1`), which **stops** this autonomous base scan. Use it when you want
+the handled-card behavior, not raw UIDs.
 
 Card event frame types the reader sends:
 

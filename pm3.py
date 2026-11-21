@@ -591,7 +591,7 @@ def main():
     p.add_argument("--wait-startup", action="store_true",
                    help="wait for the reader's 0x0F boot frame before enabling (use right after power-on)")
     p.add_argument("--reset", action="store_true",
-                   help="reset the reader (0x10) and wait for its 0x0F startup, then enable (reliable cold arm)")
+                   help="restart the reader (0x10 02) and wait for its 0x0F startup, then enable (reliable cold arm)")
     p.set_defaults(fn=cmd_cvend_watch)
 
     sp.add_parser("cvend-restart", help="clean software restart of the reader app (0x10 02); wakes a slept reader").set_defaults(fn=cmd_cvend_restart)

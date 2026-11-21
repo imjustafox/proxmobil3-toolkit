@@ -93,7 +93,7 @@ PM3_HOST=<unit-ip> ./pm3.py info            # kernel, services, ttys
 ./pm3.py pic-read                            # PIC32 sensors: rails, temp, counters, fw
 ./pm3.py pic-read 5040                        # input voltage (mV)
 ./pm3.py watchdog 0                           # disable the PIC32 watchdog
-./pm3.py cvend-watch                          # raw card events
+./pm3.py cvend-watch                          # enable card handlers, dump reader events
 ./pm3.py cvend-restart                         # software-restart the reader (wakes a slept one, ~6s)
 ./pm3.py cvend-ls /home/app0                   # list the reader's own filesystem
 ./pm3.py cvend-cat /etc/os-release             # read a file off the reader

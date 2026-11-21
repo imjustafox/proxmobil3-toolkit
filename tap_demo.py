@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """PROXmobil3 tap-to-UID demo.
 
-Arms the cVEND reader (reverse-engineered sequence), then on every card tap:
+Listens to the cVEND reader's autonomous post-boot scan (no init or arming --
+initializing would stop that scan), then on every card tap:
   - draws the card UID large on the device framebuffer (/dev/fb0)
   - chirps the cVEND piezo buzzer (IPP 0x22) as feedback
 
