@@ -6,7 +6,7 @@ which would stop that scan), then on every card tap:
   - draws the card UID large on the device framebuffer (/dev/fb0)
   - chirps the cVEND piezo buzzer (IPP 0x22) as feedback
 
-Runs on your Mac; drives the device over SSH. Needs the reader already
+Runs on macOS or Linux; drives the device over SSH. Needs the reader already
 powered and responsive (nx not required). Pillow is used to render text.
 
     ./tap_demo.py            # uses PM3_HOST or 10.0.1.102
