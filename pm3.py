@@ -9,7 +9,7 @@ Protocol notes come from https://wiki.pm3.dev/pic32 and /cvend.
 
 Frame:  BC seq replyTo msgType lenHi lenLo hdrCRC8 data... [crc32 LE]
         hdrCRC8 = CRC-8/MAXIM over the first 6 bytes
-        crc32 (standard CRC-32, little-endian) only when msgType >= 0x80
+        crc32 (CRC-32/JAMCRC, bit-inverted, little-endian) only when msgType >= 0x80
 """
 import argparse
 import binascii
@@ -287,8 +287,11 @@ def cvend_enable(s, names, retries=8):
         for cid in ids:
             s.request(0xE4, bytes([0x00, cid, 0x01, 0x01]), timeout=1.2)
         s.request(0xAA, bytes.fromhex("6afec201"), timeout=1.2)   # 0xAA = SetTime (timestamp)
-        # The cert read returning the device cert (0xE9, ~1KB) is the real
-        # CONNECTED->INITIALIZED trigger that turns on polling.
+        # This replicates nx's handshake so the reader reports ENABLED types as
+        # handled 0xD5 enter/leave events. It is NOT needed for raw UIDs: the
+        # reader scans autonomously after boot and this init actually stops that
+        # scan (see INTERFACE.md and tap_demo.py for the no-init 0xBE recipe).
+        # The cert read (0xE9, ~1KB) completing is nx's CONNECTED->INITIALIZED mark.
         r = s.request(0xE8, bytes.fromhex("04fe0a0000"), timeout=2.0)
         if r and r["type"] == 0xE9 and len(r["data"]) > 100:
             print(f"reader INITIALIZED (cert read ok, attempt {attempt})")
@@ -314,8 +317,8 @@ def cmd_cvend_watch(args):
     """Enable card functions and print every frame the reader sends."""
     s = SshSerial(CVEND_TTY)
     if args.reset or args.wait_startup:
-        print("resetting reader (0x10) and waiting for 0x0F startup ...")
-        s.send(0x10)  # reader reset -> reboots -> emits 0x0F Startup -> polls
+        print("restarting reader (0x10 02) and waiting for 0x0F startup ...")
+        s.send(0x10, b"\x02")  # subcode 2 = restart app -> 0x0F Startup (bare 0x10 wedges it)
         print("startup seen" if cvend_wait_startup(s) else "no startup (continuing)")
     cvend_enable(s, args.enable)
     print("--- tap a card ---")
