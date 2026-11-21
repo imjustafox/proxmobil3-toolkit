@@ -7,9 +7,11 @@
 > longer the only deterministic recovery. A *bare* `0x10` with no subcode is what
 > wedges it. (2) For plain UID capture the keepalive-and-re-arm model is moot: the
 > reader scans ISO14443 autonomously after boot with no enable/arm at all (`0xBE`
-> frames), so there is nothing to "re-arm." The public-documentation map below (RF
-> idle timers, no host wake opcode, the OBID/IPP split) stands; the current
-> operational account is **INTERFACE.md** (§NFC, §Sleep).
+> frames), so there is nothing to "re-arm." (Relatedly, the `0xAA 6afec201` the body
+> below calls an "arm command" is in fact **SetTime** — firmware handler
+> `IppHandlerSetTime` — part of nx's handshake, not a scanning trigger.) The
+> public-documentation map below (RF idle timers, no host wake opcode, the OBID/IPP
+> split) stands; the current operational account is **INTERFACE.md** (§NFC, §Sleep).
 
 The FEIG cVEND reader inside your INIT PROXmobil3 locks into a 3-second heartbeat because that is almost certainly FEIG's **documented RF-field auto-timeout firing after idle**, compounded by a genuine **sub-1 mA hardware standby state that the datasheet says is left only "by digital input or timer"** — not by the status frames you are sending. FEIG's own ID ISC reader manuals describe an automatic "RF-Field minimum/maximum on-time" plus a "Power on-time" in configuration block CFG21, after which "the complete Reader will turn off automatically" ([FEIG ID ISC.PRH200 manual, p.22](https://manualshive.com/en/manual/obid/id-isc-prh200/3157489?page=22)); there is **no host "sleep" or "wake" opcode** anywhere in the documented FEIG command set, which means the fix is to never let the idle timer expire rather than to command a wake. The actionable answer has two halves that must be kept distinct: a *keepalive* that re-arms the reader faster than its sleep window, and a *graded reset ladder* that escalates from a benign probe up to a power cycle. The crucial honesty caveat is that every documented timer, mode, and reset opcode above belongs to FEIG's **public OBID/ID ISC protocol (STX 0x02 framing)**, and the cVEND speaks a *separate, closed* 0xBC "IPP" secure protocol — so the OBID mechanisms tell you what FEIG hardware does, while the exact IPP keepalive cadence, the working `0x10` reset sub-code, and whether CFG21-style timers are even host-reachable on the cVEND remain things we have had to reverse-engineer or still cannot confirm. Below, the power/sleep behavior comes first and in depth; the hardware, SDK/protocol, and transit-stack findings follow; and a closing table maps precisely where public FEIG documentation confirms our reverse-engineering, where our work goes beyond anything published, and where neither side has an answer.
 
