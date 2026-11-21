@@ -1,9 +1,10 @@
 # The PM3 host system (i.MX6): software deep dive
 
 The PROXmobil3 is really two computers: the FEIG cVEND reader (its own ARM and
-Buildroot, documented in `docs/feig-firmware.md`) and the host, an NXP i.MX6 Solo
-running INIT's PTXdist Linux. The host drives the screen, talks to the reader and
-the PIC32 over serial, and runs the transit application.
+Buildroot, documented in `docs/feig-firmware.md`) and the host, an NXP i.MX6DL
+(DualLite) running INIT's PTXdist Linux. The kernel is built uniprocessor, so one
+core is online. The host drives the screen, talks to the reader and the PIC32 over
+serial, and runs the transit application.
 
 This document covers the host software. Hardware and peripherals are in
 `INTERFACE.md`. The stock UI app's RE techniques are in `docs/reversing-nx.md`.
@@ -18,8 +19,9 @@ client, which is the host's most substantial piece.
 
 ## 1. Boot and storage
 
-- SoC and kernel: i.MX6 Solo, `Linux 4.9.166-fsl-imx-INIT-004` (armv7l, PTXdist
-  2019.03). Kernel cmdline: `root=/dev/sda1 ro rootfstype=ext4 rootwait cma=128M
+- SoC and kernel: i.MX6DL (DualLite), `Linux 4.9.166-fsl-imx-INIT-004` (armv7l,
+  PTXdist 2019.03). The kernel is built without SMP, so only CPU0 is online.
+  Kernel cmdline: `root=/dev/sda1 ro rootfstype=ext4 rootwait cma=128M
   imx-fbdev.legacyfb_depth=32 consoleblank=0 quiet`.
 - Storage (three block devices plus SPI flash):
   - `/dev/sda1` to `/`: rootfs, ext4, mounted read-only (the PTXdist system).

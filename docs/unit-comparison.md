@@ -18,12 +18,34 @@ here.
 ## Hardware and capture coverage
 
 All three units identify as `TQ TQMa6S on PM3`, with the device-tree compatible
-string `fsl,imx6dl`, 512 MB RAM, and one CPU online. The module serial and Ethernet
-MAC are the per-unit differences.
+string `fsl,imx6dl`, and the same module part, `TQMa6S-CE.0203`. Linux identifies
+the SoC as i.MX6DL, silicon rev 1.3. Each has 512 MB RAM.
+
+Only one CPU is online. That is not a different SoC. The kernel is built with
+`CONFIG_SMP` unset, so the UP kernel uses CPU0 only, even though the SoC is a
+DualLite part. The module serial and Ethernet MAC are the per-unit hardware
+differences.
+
+| Hardware | All three |
+|---|---|
+| Module | TQMa6S-CE.0203 |
+| SoC | i.MX6DL (DualLite), silicon rev 1.3 |
+| CPU | one core online, 792 MHz maximum |
+| RAM | 512 MB |
+| PMIC | PFUZE100, full layer 2, metal layer 1, FAB 0, FIN 0 |
+| Audio codec | TLV320AIC32x4 at i2c 0x18 |
+| Sensors | LM75 at 0x48, 24c64 EEPROMs at 0x50 and 0x57 |
+| SPI flash | 16 MB, byte-identical image |
+| Internal storage | 1 GB sda and sdb, same partition layout |
+
+Earlier revisions of these notes called the SoC an i.MX6 Solo. The live kernel,
+`dmesg`, and the device-tree compatible string all say i.MX6DL. The one-core
+behavior comes from the UP kernel build.
 
 | | unit154 | unit98 | unit73914987 |
 |---|---|---|---|
 | Module serial | 72968085 | 73437401 | 73914987 |
+| Ethernet MAC | 00:d0:93:4a:ba:a7 | 00:d0:93:4d:7e:39 | 00:d0:93:4f:b6:25 |
 | Capture | full dump | full dump | dongle auto-dump |
 | Hardware scan | yes | yes | no |
 | Reader firmware | yes, from `V0200.C72` | yes, from `V0200.C72` | image only |
@@ -157,9 +179,9 @@ installer sets start at `V0100`. `unit98` starts at `V0101`, which adds the
 
 ## What the comparison says
 
-- These are three copies of the same OS and application build, with the same
-  bootloader and reader firmware. The differences are provisioning data, runtime
-  history, and one network workaround.
+- These are three copies of the same hardware and OS/application build, with the
+  same bootloader and reader firmware. The differences are provisioning data,
+  runtime history, and one network workaround.
 - `unit73914987` is not just a later update of the other two. It is on a different
   provisioning base (`F20220824`) with a different ticket table.
 - `unit73914987` has real queued state that should not be published: 161 offline

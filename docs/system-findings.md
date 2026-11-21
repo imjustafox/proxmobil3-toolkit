@@ -13,8 +13,9 @@ The device runs INIT's own `INIT-004` board support package:
 - Built with OSELAS.Toolchain-2018.12.0 (gcc 8.2.1,
   `arm-v7a-linux-gnueabihf`) on PTXdist 2019.03.1, the Pengutronix embedded-Linux
   build system.
-- The module is a TQ-Systems TQMa6S (i.MX6 Solo) on INIT's PM3 carrier board.
-  U-Boot is built multi-board for the whole TQMa6 family (S/DL/D/Q).
+- The module is a TQ-Systems TQMa6S (i.MX6DL, DualLite) on INIT's PM3 carrier
+  board. The kernel is built without SMP, so only one core is online. U-Boot is
+  built multi-board for the whole TQMa6 family (S/DL/D/Q).
 - Embedded source-tree paths identify the two application codebases: INIT's nx /
   `proxcontroller-feig2` tree (the reader app and nx), and a Bytemark tree (the ABT
   `proxy_server`).

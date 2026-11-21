@@ -115,7 +115,7 @@ code.
 
 | | |
 |---|---|
-| Module / SoC | TQMa6S, i.MX6 Solo Cortex-A9 792 MHz, 512 MB DDR3L |
+| Module / SoC | TQMa6S, i.MX6DL (DualLite) Cortex-A9 792 MHz, 512 MB DDR3L; UP kernel |
 | OS / kernel | PTXdist 2019.03, Linux 4.9.166-fsl-imx (old glibc, build static) |
 | Display | 5", 800x480, `/dev/fb0`, BGRX, no touchscreen |
 | PIC32 power/watchdog | `/dev/ttymxc2`, 115200 8N1, IPP |

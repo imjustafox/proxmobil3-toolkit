@@ -12,7 +12,7 @@ reverse-engineered.
 | | |
 |---|---|
 | Module | TQMa6S (serial 73914987, variant TQMa6S-CE.0203) on INIT's PM3 carrier |
-| SoC | i.MX6 Solo, Cortex-A9 at 792 MHz, 512 MB DDR3L |
+| SoC | i.MX6DL (DualLite), Cortex-A9 at 792 MHz, 512 MB DDR3L; kernel built UP |
 | OS | PTXdist 2019.03.1 ("INIT SE-iLNX"), built 2020-03-31, systemd |
 | Kernel | Linux 4.9.166-fsl-imx-INIT-004, armv7l |
 | Boot | U-Boot in 16 MB SPI flash (mtd0), loads uImage and DTB from sda1:/boot |
