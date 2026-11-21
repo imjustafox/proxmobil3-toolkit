@@ -23,7 +23,7 @@ static void itoa_fd(int fd, char *out){ /* small int -> decimal */
 }
 static const char HEX[]="0123456789abcdef";
 
-/* which fds are the two serial ports we care about; cache by probing */
+/* find which fd is one of the two serial ports we care about */
 static int interesting(int fd){
     char path[32]="/proc/self/fd/"; char num[8]; itoa_fd(fd,num);
     unsigned long p=slen(path); for(unsigned long i=0;num[i];i++) path[p++]=num[i]; path[p]=0;

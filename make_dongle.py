@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""make_dongle.py -- prepare a PROXmobil3 access dongle (USB) on macOS or Linux.
+"""make_dongle.py: prepare a PROXmobil3 access dongle (USB) on macOS or Linux.
 
 Formats a USB stick the way the unit's boot expects (MBR, one FAT32 partition
 labelled MP_SD) and copies the access payload onto it:
@@ -14,7 +14,7 @@ labelled MP_SD) and copies the access payload onto it:
 Plug the result into the dongle's USB-A port and power-cycle the unit (see README).
 
 Keys can come from a local .pub file, an https:// URL, a GitHub username
-(github.com/<user>.keys), or your ~/.ssh/*.pub -- one or several.
+(github.com/<user>.keys), or one or more keys from ~/.ssh/*.pub.
 
 Usage:
     ./make_dongle.py                                  # interactive: pick disk + keys
@@ -300,7 +300,7 @@ def format_and_mount(disk):
             subprocess.run(["sync"])
             if not run_ok(["diskutil", "eject", disk.ident], tries=4, delay=2.0):
                 print(f"  note: could not eject {disk.ident} (macOS was still indexing it). "
-                      f"The payload is written and synced -- eject it in Finder, or wait a "
+                      f"The payload is written and synced. Eject it in Finder, or wait a "
                       f"few seconds and unplug it.")
         return "/Volumes/MP_SD", cleanup
     # Linux

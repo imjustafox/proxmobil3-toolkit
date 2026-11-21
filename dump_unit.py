@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""dump_unit.py -- full capture + stock-restore for an INIT PROXmobil3 unit.
+"""dump_unit.py: full capture and stock-restore for an INIT PROXmobil3 unit.
 
 Over SSH (root access comes from the mp_sd dongle's autorun), capture a unit to
 <out>/unit<SERIAL>/, then put it back to stock. Default output is
@@ -27,8 +27,8 @@ Usage:
     python3 dump_unit.py --host 192.168.1.98 --no-reader --no-dump   # scans only
 
 The dumps hold operator production data; keep them off any repo (the default lives
-outside this tree). After a run with cleanup we are locked out (stock restored) --
-pull the dongle before returning the unit. Reader file-ops reuse pm3.py (same directory).
+outside this tree). After a run with cleanup we are locked out (stock restored),
+so pull the dongle before returning the unit. Reader file-ops reuse pm3.py (same directory).
 """
 import argparse
 import gzip
@@ -164,7 +164,7 @@ def dump_block(host, dev, outpath):
             total += len(chunk)
     rc = p.wait()
     if rc != 0 or total == 0:
-        log(f"  {dev}: FAILED (dd rc={rc}, {total} bytes) -- removing empty capture")
+        log(f"  {dev}: FAILED (dd rc={rc}, {total} bytes), removing empty capture")
         try:
             os.remove(outpath)
         except OSError:
@@ -195,7 +195,7 @@ def unpack_reader_fw(outdir):
     rf = os.path.join(outdir, "reader-firmware")
     c72 = os.path.join(outdir, "host-archive", "V0200.C72")
     if not os.path.isfile(c72):
-        log("no V0200.C72 in host-archive -- skipping reader firmware")
+        log("no V0200.C72 in host-archive, skipping reader firmware")
         return None
     os.makedirs(rf, exist_ok=True)
     log("unpacking cVEND reader firmware from V0200.C72")
@@ -260,7 +260,7 @@ def write_summary(outdir, serial, part, mac, host, disks, sums, archives, reader
                 dt = lines[i + 1].strip()
                 break
     with open(os.path.join(outdir, "SUMMARY.md"), "w") as f:
-        f.write(f"# PM3 unit dump — {host}\n\n")
+        f.write(f"# PM3 unit dump: {host}\n\n")
         f.write(f"- Module: **{part or '?'}**, serial **{serial}**, MAC {mac}\n")
         f.write(f"- Device-tree model: {dt}\n")
         f.write(f"- Captured: {time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
@@ -272,10 +272,10 @@ def write_summary(outdir, serial, part, mac, host, disks, sums, archives, reader
         f.write("\n(sha256 is of the decompressed image.)\n")
         f.write("\n## Also captured\n")
         f.write("- hwscan.txt, dmesg.txt\n")
-        f.write(f"- host-archive/ — provisioning dataset: {' '.join(archives)}\n")
-        f.write(f"- reader-firmware/ — cVEND firmware (kernel/rootfs/app), version {reader_ver}\n")
-        f.write("- reader-live/ — live reader config pulled over the serial\n\n")
-        f.write("Operator production data — keep local, do not commit/publish.\n")
+        f.write(f"- host-archive/: provisioning dataset: {' '.join(archives)}\n")
+        f.write(f"- reader-firmware/: cVEND firmware (kernel/rootfs/app), version {reader_ver}\n")
+        f.write("- reader-live/: live reader config pulled over the serial\n\n")
+        f.write("Operator production data. Keep local, do not commit or publish.\n")
 
 
 # ---- 8. cleanup ------------------------------------------------------------
@@ -312,7 +312,7 @@ def main():
     host = a.host
 
     if not reachable(host):
-        log(f"cannot ssh root@{host} — is the unit booted with the [TestMode] dongle inserted?")
+        log(f"cannot ssh root@{host}; is the unit booted with the [TestMode] dongle inserted?")
         sys.exit(1)
 
     serial, part, mac = identify(host)
@@ -366,7 +366,7 @@ def main():
         log("--no-cleanup: our SSH access is still on the unit.")
     else:
         cleanup(host)
-        log("cleanup done — we are now locked out (stock restored).")
+        log("cleanup done. We are now locked out (stock restored).")
         log("Pull the mp_sd dongle before returning the unit; the next boot is then stock nx.")
 
 

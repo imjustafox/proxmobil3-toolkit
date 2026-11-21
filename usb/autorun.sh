@@ -1,8 +1,8 @@
 #!/bin/sh
-# PROXmobil3 boot script: SAFE baseline for standalone card-reading tests.
+# PROXmobil3 boot script: safe baseline for standalone card-reading tests.
 # Enables root SSH, disables the PIC32 watchdog (so the unit stays up with no
-# nx), and does NOT start nx — leaving the reader's fresh-boot auto-scan free for
-# our own tool to read, with no nx and no loud validator beep.
+# nx), and does not start nx. That leaves the reader's fresh-boot auto-scan free
+# for our own tool to read, with no nx and no loud validator beep.
 HERE=$(cd "$(dirname "$0")" && pwd)
 LOG="$HERE/pm3-autorun.log"
 exec >"$LOG" 2>&1
@@ -31,4 +31,4 @@ mount -o remount,ro /
 touch "$HERE/.pm3-nodump" 2>/dev/null
 
 date
-echo "ssh enabled, watchdog off, nx NOT started (reader auto-scan free for our tool)"
+echo "ssh enabled, watchdog off, nx left stopped (reader auto-scan free for our tool)"

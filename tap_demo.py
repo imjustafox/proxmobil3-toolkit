@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """PROXmobil3 tap-to-UID demo.
 
-Listens to the cVEND reader's autonomous post-boot scan (no init or arming --
-initializing would stop that scan), then on every card tap:
+Listens to the cVEND reader's autonomous post-boot scan (no init or arming,
+which would stop that scan), then on every card tap:
   - draws the card UID large on the device framebuffer (/dev/fb0)
   - chirps the cVEND piezo buzzer (IPP 0x22) as feedback
 
@@ -67,10 +67,10 @@ def draw_fb(buf: bytes):
 def main():
     print(f"connecting to {HOST} ...")
     s = pm3.SshSerial(pm3.CVEND_TTY)
-    # Do NOT re-init the reader -- that disrupts its autonomous post-boot scan.
+    # Do not re-init the reader; that disrupts its autonomous post-boot scan.
     # Just listen, and send a 0x04 status every ~1s so it never goes idle. It
     # streams 0xBE frames (UID) for every tap, indefinitely. No nx, no keys.
-    draw_fb(render("—  tap a card  —", 0))
+    draw_fb(render("tap a card", 0))
     print("listening (1s keepalive, no re-init). tap a card (Ctrl-C to quit).")
 
     count = 0
@@ -84,7 +84,7 @@ def main():
                 last_status = time.time()
             f = s.recv(0.4)
             # Only 0xBE (UnhandledCard) carries a tap's UID in this no-init mode.
-            # Gate on the frame type, never on "a 0x04 byte appeared" -- 0xD1/0xED
+            # Gate on the frame type, never on "a 0x04 byte appeared": 0xD1/0xED
             # frames carry 0x04 bytes too and would phantom-read (see INTERFACE.md, NFC).
             if not f or f["type"] != 0xBE:
                 continue

@@ -1,14 +1,11 @@
-/* LD_PRELOAD shim: trace a process's device access, to find what the stock app
- * `nx` does to the audio hardware that a plain `aplay` does not. Logs every
- * open()/openat() path+flags, and every ioctl() on an "interesting" fd (one that
- * resolves to /dev/snd*, /dev/i2c*, /dev/mem, a gpio or clk node, or any /sys
- * path). The decisive signal is any device touched beyond /dev/snd*.
+/* LD_PRELOAD shim to trace a process's device access. It logs open()/openat()
+ * paths and flags, plus ioctl() calls on fds for /dev/snd*, /dev/i2c*, /dev/mem,
+ * gpio, clk, or any /sys path. Use it to compare what nx touches with what a
+ * plain aplay touches.
  *
- * Same approach as cvsniff.c: the "real" calls are raw `syscall()`s, so this
- * depends only on glibc's stable `syscall` + `getenv` symbols and loads on the
- * device's 2019 userland. Process-agnostic: the SAME .so works for `nx` and for
- * `aplay`; each log line is prefixed with [pid:comm] so the two runs are
- * distinguishable even in one shared log.
+ * The real calls use raw syscall()s, so this depends only on glibc's syscall and
+ * getenv symbols and loads on the device's 2019 userland. The same .so works for
+ * nx and aplay. Each log line is prefixed with [pid:comm] so runs can share a log.
  *
  * Build (on a host with the cross toolchain, as used for cvsniff.so):
  *     arm-linux-gnueabihf-gcc -shared -fPIC -O2 -o audiotrace.so audiotrace.c
@@ -22,7 +19,8 @@
  *                      Environment=LD_PRELOAD=/init/audiotrace.so
  *                      Environment=AUDIOTRACE_LOG=/init/at_nx.log
  *                    then `systemctl daemon-reload; systemctl restart nx`, tap once.
- *   diff at_nx.log vs at_aplay.log -> the extra device/ioctl is the gate.
+ *   Compare at_nx.log with at_aplay.log. The extra device or ioctl is where the
+ *   two runs differ.
  *
  * Default log path is /init/audiotrace.log; override with $AUDIOTRACE_LOG.
  */

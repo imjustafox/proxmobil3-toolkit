@@ -274,12 +274,12 @@ def decode_event(f):
 
 
 def cvend_enable(s, names, retries=8):
-    """Replicate nx's real reader-enable handshake (reverse-engineered by
-    LD_PRELOAD-sniffing nx) and retry until the reader actually acks an enable.
+    """Replicate nx's reader-enable handshake (reverse-engineered by
+    LD_PRELOAD-sniffing nx) and retry until the reader acknowledges an enable.
 
     The reader only accepts enables in the right state; the leading 0xEA primes
     it, but it can take several attempts (it ignores commands while busy/asleep).
-    Returns True once an 0xE4 is acked (0xE5 … 0000)."""
+    Returns True once an 0xE4 is acked (0xE5 ... 0000)."""
     ids = [CARD_FUNCS[n] for n in names]
     for attempt in range(1, retries + 1):
         s.request(0xEA, bytes.fromhex("0100"), timeout=1.2)  # prime/wake
@@ -287,16 +287,16 @@ def cvend_enable(s, names, retries=8):
         for cid in ids:
             s.request(0xE4, bytes([0x00, cid, 0x01, 0x01]), timeout=1.2)
         s.request(0xAA, bytes.fromhex("6afec201"), timeout=1.2)   # 0xAA = SetTime (timestamp)
-        # This replicates nx's handshake so the reader reports ENABLED types as
-        # handled 0xD5 enter/leave events. It is NOT needed for raw UIDs: the
-        # reader scans autonomously after boot and this init actually stops that
-        # scan (see INTERFACE.md and tap_demo.py for the no-init 0xBE recipe).
+        # This replicates nx's handshake so the reader reports enabled types as
+        # handled 0xD5 enter/leave events. It is not needed for raw UIDs: the
+        # reader scans autonomously after boot and this init stops that scan
+        # (see INTERFACE.md and tap_demo.py for the no-init 0xBE recipe).
         # The cert read (0xE9, ~1KB) completing is nx's CONNECTED->INITIALIZED mark.
         r = s.request(0xE8, bytes.fromhex("04fe0a0000"), timeout=2.0)
         if r and r["type"] == 0xE9 and len(r["data"]) > 100:
             print(f"reader INITIALIZED (cert read ok, attempt {attempt})")
             return True
-        print(f"arm attempt {attempt}: no cert yet, retrying ...")
+        print(f"enable attempt {attempt}: no cert yet, retrying ...")
         for _ in range(3):
             s.send(0x04); time.sleep(0.3)   # nudge awake between tries
     print("reader never returned cert (continuing; polling may be off)")
@@ -345,7 +345,7 @@ def cmd_cvend_watch(args):
 # --- cVEND file operations -------------------------------------------------
 # The reader runs its own embedded Linux (FEIG cVEND, Buildroot 2014.05). These
 # two IPP commands read its filesystem; layouts reverse-engineered by sniffing
-# nx and verified on hardware. Read-only -- the write ops (0x96 PutFile, 0x9A
+# nx and verified on hardware. Read-only. The write ops (0x96 PutFile, 0x9A
 # DeleteFile) are deliberately not wrapped here.
 
 def cvend_filelist(s, path):
@@ -402,7 +402,7 @@ def cmd_cvend_ls(args):
     s = SshSerial(CVEND_TTY)
     rows = cvend_filelist(s, args.path)
     if rows is None:
-        print("(no reply -- not a directory, a plain file, or reader busy)")
+        print("(no reply: not a directory, a plain file, or reader busy)")
     else:
         for name, mtime in rows:
             print(f"{mtime}  {name}")
@@ -439,31 +439,32 @@ def cmd_cvend_cat(args):
 def cmd_cvend_restart(args):
     """Clean software restart of the reader app via 0x10 subcode 2.
 
-    Recovers a reader that has gone to sleep (scanning stopped) WITHOUT a physical
+    Recovers a reader that has gone to sleep (scanning stopped) without a physical
     power cycle: ~6 s later the reader emits 0x0F Startup and is back in its fresh
-    post-boot scanning state. Bare 0x10 (no subcode) instead wedges it -- always
+    post-boot scanning state. Bare 0x10 (no subcode) instead wedges it, so always
     send the subcode."""
     s = SshSerial(CVEND_TTY)
     print("restarting reader app (0x10 02) ...")
     s.send(0x10, b"\x02")                 # subcode 2 = restart application
     ok = cvend_wait_startup(s, timeout=20)
-    print("0x0F Startup seen -- reader restarted, scanning fresh"
+    print("0x0F Startup seen, reader restarted, scanning fresh"
           if ok else "no 0x0F within 20s (rare; if unresponsive, power-cycle)")
     s.close()
 
 
 # --- audio (ALSA speaker) --------------------------------------------------
-# The grille speakers are on the TLV320AIC32x4 Line-Out, ALSA card 0 "PM3 Audio",
-# but the Line-Out feeds an EXTERNAL power amp ("PAmobil2") that is OFF at power-on
-# and switched on over the PIC32: ValueWrite key 0x07E0, 1 = on, 0 = off -- one master
-# gate for both channels, readable, latched until the PIC32 resets at power-off. With
-# the amp off the codec/mixer/clocks are all fine and the speaker is still SILENT,
-# which is why playback historically "needed nx": nx switches the amp on once at
-# startup (its NxPaCtrl / NxPaMobil2PicDev). `play` and `amp on` set 0x07E0=1 here, so
-# no nx is needed. Two ALSA details still matter: keep the stock routing (alsactl
-# restore) with `LO Driver Gain` 6 (0 dB baseline), and play a FILE, not a pipe (stdin
-# into aplay is silent on this device). The piezo buzzer (beep) is separate hardware
-# and always works. See INTERFACE.md for the full story.
+# The grille speakers are on the TLV320AIC32x4 Line-Out, ALSA card 0 "PM3 Audio".
+# The Line-Out feeds an external power amp ("PAmobil2") that is off at power-on
+# and switched on over the PIC32: ValueWrite key 0x07E0, 1 = on, 0 = off. One
+# master gate for both channels, readable, latched until the PIC32 resets at
+# power-off. With the amp off the codec, mixer, and clocks are all fine and the
+# speaker is silent, which is why playback historically seemed to need nx: nx
+# switches the amp on once at startup (its NxPaCtrl / NxPaMobil2PicDev). `play`
+# and `amp on` set 0x07E0=1 here, so nx is not needed. Two ALSA details still
+# matter: keep the stock routing (alsactl restore) with `LO Driver Gain` 6 (the
+# 0 dB baseline), and play a file, not a pipe (stdin into aplay is silent on this
+# device). The piezo buzzer (beep) is separate hardware and always works. See
+# INTERFACE.md for the full story.
 
 PA_ENABLE_KEY = 0x07E0   # PIC32 audio power-amp master enable: 1 = on, 0 = off
 

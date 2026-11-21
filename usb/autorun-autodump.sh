@@ -1,9 +1,10 @@
 #!/bin/sh
 # PROXmobil3 boot script: standalone access + a one-time auto-dump to this USB.
-# Does everything autorun.sh does (root SSH on, PIC32 watchdog off, nx NOT started,
-# .pm3-nodump marker) and then, on the first boot only, dd|gzips the unit's internal
-# disks to pm3-dump/ on the stick with sha256sums. Re-boots skip the dump once
-# pm3-dump/device.sha256 exists. Install it with: make_dongle.py --autodump
+# Does everything autorun.sh does (root SSH on, PIC32 watchdog off, nx left
+# stopped, .pm3-nodump marker) and then, on the first boot only, dd|gzips the
+# unit's internal disks to pm3-dump/ on the stick with sha256sums. Later boots
+# skip the dump once pm3-dump/device.sha256 exists.
+# Install it with: make_dongle.py --autodump
 HERE=$(cd "$(dirname "$0")" && pwd)
 LOG="$HERE/pm3-autorun.log"
 exec >"$LOG" 2>&1
@@ -54,4 +55,4 @@ else
 fi
 
 date
-echo "ssh enabled, watchdog off, nx NOT started; auto-dump -> pm3-dump/ on the stick"
+echo "ssh enabled, watchdog off, nx left stopped; auto-dump -> pm3-dump/ on the stick"
