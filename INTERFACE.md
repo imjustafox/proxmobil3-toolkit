@@ -263,7 +263,8 @@ on the device. The `0x20` message is the direct path.
 
 Backlight has no `/sys/class/backlight` entry, and the LCD DTB node has no
 `pwm-backlight`, so there is no software brightness control. Backlight follows LCD
-power. To blank the screen, blank fb0.
+power. To clear the screen to black, write zeros to fb0; `./pm3.py blank-screen`
+does that.
 
 ## Audio and buzzer
 

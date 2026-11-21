@@ -581,6 +581,13 @@ def cmd_info(args):
                  "systemctl is-active nx init-abtproxy; ls /dev/ttymxc* /dev/ttyUSB* /dev/fb* 2>/dev/null"))
 
 
+def cmd_blank_screen(args):
+    # fb0 is 800x480 BGRX, stride 3200. Stop the fbcon cursor blinking first,
+    # then write zeros so the console does not repaint a cursor block.
+    sys.exit(ssh("echo 0 > /sys/class/graphics/fbcon/cursor_blink 2>/dev/null; "
+                 "dd if=/dev/zero of=/dev/fb0 bs=3200 count=480 2>/dev/null"))
+
+
 def main():
     global HOST
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -588,6 +595,7 @@ def main():
     sp = ap.add_subparsers(dest="cmd", required=True)
 
     sp.add_parser("info", help="print kernel, uptime, memory, services, and ttys").set_defaults(fn=cmd_info)
+    sp.add_parser("blank-screen", help="clear the device framebuffer to black").set_defaults(fn=cmd_blank_screen)
     sp.add_parser("nx-stop", help="stop stock UI + disable watchdog").set_defaults(fn=cmd_nx_stop)
     sp.add_parser("nx-start", help="start the stock UI (nx) and abtproxy again").set_defaults(fn=cmd_nx_start)
 

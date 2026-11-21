@@ -92,6 +92,7 @@ protocol details.
 
 ```sh
 PM3_HOST=<unit-ip> ./pm3.py info            # kernel, services, ttys
+./pm3.py blank-screen                        # clear the framebuffer to black
 ./pm3.py pic-read                            # PIC32 sensors: rails, temp, counters, fw
 ./pm3.py pic-read 5040                        # input voltage (mV)
 ./pm3.py watchdog 0                           # disable the PIC32 watchdog
