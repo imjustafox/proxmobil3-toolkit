@@ -1,6 +1,7 @@
 # Comparing the three unit captures
 
-The repo has full images for three PROXmobil3 units:
+The captures come from three PROXmobil3 units. The images are kept offline and
+are not in this repo:
 
 - `unit154`: module serial 72968085
 - `unit98`: module serial 73437401
