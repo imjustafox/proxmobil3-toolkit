@@ -264,12 +264,34 @@ TLV320AIC32x4 codec (I²C bus 0 @ 0x18, fed over SSI), exposed as ALSA card 0
 "PM3 Audio". There's a capture path too (Mic PGA / ADC). The piezo buzzer above is
 separate hardware — the ALSA mixer does not affect it, and vice versa.
 
-**Prerequisite (open issue): nx must have played audio at least once since
-power-on.** Once it has — e.g. a card-tap tone — the speaker keeps working even after
-`systemctl stop nx`, until the next reboot. On a *true* cold boot where nx has never
-played (e.g. the dongle `autorun.sh` path) the speaker is **silent no matter what**;
-this is not yet explained — see the speaker lesson in `PROCESS.md`. With that
-prerequisite met and nx stopped, two details still have to be right or you get
+**The Line-Out feeds an external power amplifier ("PAmobil2") that is OFF at
+power-on and must be switched on over the PIC32.** This is the one thing that makes
+the whole codec/ALSA side look dead: with the amp off, the codec, mixer, clocks and
+SSI are all fully configured and clocking real samples, and the speaker is still
+silent. The amp is gated by a single PIC32 value:
+
+- **Key `0x07E0` (PIC32 `ValueWrite`, type `0x04`): `1` = amp on, `0` = amp off.**
+  One master gate, both channels. It reads back (`ValueRead`), so you can query the
+  current state. It's a hard latch — once set it stays on until the PIC32 resets at
+  the next power-off, so a borrowed unit reverts to stock on reboot (nothing
+  persistent is written).
+
+```sh
+./pm3.py amp on          # PIC32 0x07E0 = 1   (enable the power amp)
+./pm3.py amp status      # read 0x07E0        (1 = on, 0 = off)
+./pm3.py play tone.wav   # sets 0x07E0 = 1 itself, then plays — no nx needed
+```
+
+`./pm3.py play` asserts the amp enable before every playback, so it works from a
+cold, nx-free boot. (Raw equivalent: `./pm3.py pic-raw 04 07e001`.) The stock app
+does the same thing once at startup — this is its `NxPaCtrl` "PA Amplifier Control
+Mode", driven on this unit via `NxPaMobil2PicDev`, i.e. a PIC32 command — which is
+why for so long "the speaker only worked after nx had run": nx had switched the amp
+on and it stayed latched until reboot. nx's config also has a `0x4031` = 15000 ms
+"Hold on Active" time, but the enable is durable (it does **not** auto-standby across
+that window), so a one-time `amp on` is enough; `play` re-asserts it anyway.
+
+With the amp on and nx stopped, two ALSA details still have to be right or you get
 *silence with no error*:
 
 1. **Line-Out driver gain at its 0 dB baseline.** `alsa-restore.service` already
@@ -285,43 +307,31 @@ Volume is the **`PCM`** control, as a percentage — `amixer -c 0 sset PCM 65%`.
 `LO Driver Gain` at the 6/0 dB baseline and use PCM as the knob.) End to end:
 
 ```sh
+./pm3.py pic-raw 04 07e001                              # amp on (PIC32 0x07E0 = 1)
 alsactl -f /etc/asound.state restore
 amixer -c 0 sset 'LO Driver Gain' 6
 amixer -c 0 sset PCM 65%
 scp -O tone.wav root@<ip>:/tmp/ && ssh root@<ip> aplay /tmp/tone.wav   # file, not a pipe
 ```
 
-> **Why the prerequisite (open).** This was chased hard on the live unit. Between a
-> *silent* cold-boot playback and a *working* post-nx playback, **everything readable
-> from the kernel is identical** — codec registers (regmap view, pages 0–1), DAPM
-> widgets, GPIO, the whole audio clock tree (including the 24 MHz CKO2 that is the
-> codec MCLK), AUDMUX routing, and the SSI1 config; the SSI transmits valid I²S with
-> real samples in both. Yet one is silent and one plays, and the working state
-> persists only until reboot. So the gate is some state nx's *playback* leaves behind
-> that none of those views expose (a regmap dump reads the driver's cache, not the
-> silicon, so it can't even rule the codec out). nx plays through its own
-> **libasound/ALSA** path (`NxLowAudioAlsa`/`NxAudioPlaybackImp`), **not GStreamer**,
-> and its binary shows no `snd_mixer`, `/dev/i2c` or `/dev/mem` access — so it is not
-> obviously doing anything a plain `aplay` doesn't, which is what makes this stubborn.
-> A dynamic trace (`sniffer/audiotrace.c`, an `LD_PRELOAD` shim) of nx vs a cold
-> `aplay` came back **negative**: nx opens no `i²c`/`mem`/`gpio`/`clk`, writes **no**
-> mixer control (only read-only control enumeration for its volume UI), and uses the
-> **same** `default`→dmix→`hw:0` sink at the same 48 kHz/16-bit/stereo as `aplay`. So
-> there is no userspace poke to replay — the differentiator is **below the syscall
-> layer**: ALSA/dmix instance state, or analog settling on the first post-boot
-> stream. The cold-boot isolation tests have now been run (verified cold, nx never
-> started) and all came back **silent**, which narrows it further: a raw `aplay -D
-> hw:0` (dmix fully bypassed) is silent, so **dmix is exonerated**; a `default`
-> playback immediately after that stream is still silent, so **streaming the device
-> does not prime the gate** ("any playback flips it" is false); and a **30 s sustained**
-> cold stream is silent throughout, so there is **no analog soft-start** from
-> continuous clocking. The gate is therefore something nx's *specific* first playback
-> does at the driver/analog level that ordinary ALSA streaming — raw, mixed, or
-> sustained — does not reproduce, so there is **no host-side fix** (no `plughw:0`, no
-> boot warm-up stream). The remaining instrument is a `SNDRV_PCM_IOCTL_HW_PARAMS`/
-> `SW_PARAMS` dump from the shim to diff nx's first playback against these cold
-> streams. `PROCESS.md` tracks it. Until it's pinned, the reliable path is: **let nx
-> play once, then stop it.**
+> **How this was found.** For a long time the speaker only played after nx had run,
+> and between a *silent* cold-boot playback and a *working* post-nx playback
+> **everything readable from the kernel was identical** — codec registers (regmap,
+> pages 0–1), DAPM widgets, GPIO, the whole audio clock tree (including the 24 MHz
+> CKO2 that is the codec MCLK), AUDMUX, and the SSI1 config; the SSI transmits valid
+> I²S with real samples in both. That identity was the tell: the gate was never in
+> the SoC. An `LD_PRELOAD` trace of nx's ALSA calls (`sniffer/audiotrace.c`) vs a cold
+> `aplay` confirmed it — nx opens no `i²c`/`mem`/`gpio`/`clk`, writes no mixer control,
+> and uses the same `default`→dmix→`hw:0` sink at the same format; cold `aplay -D
+> hw:0`, a stream-primed retry, and a 30 s sustained stream were all silent too. The
+> answer was in nx's own binary strings: `ActivateExternalSpeaker`, `NxPaCtrl` ("PA
+> Amplifier Control Mode"), `NxPaMobil2PicDev` — an **external amplifier switched on
+> over the PIC32**, downstream of the codec and off-SoC on `ttymxc2`, the one bus none
+> of the audio-side probes ever watched. Sniffing nx's first-init PIC32 traffic
+> (`sniffer/cvsniff.c` logs `ttymxc2`) caught a one-time `ValueWrite 0x07E0 = 1` amid
+> the watchdog/sensor chatter; toggling it on the live unit gave a clean
+> beep→silent→beep, and a verified-cold boot with just that write — no nx — plays.
+> `PROCESS.md` has the full dead-end-to-answer path.
 
 ## Barcode scanner
 
@@ -344,6 +354,8 @@ The PIC32 is a power and health supervisor, not just a watchdog. Read its keys w
 - `500b` ambient light, `03fb` ignition, `0100` power button, `8104` ignition-start
   count, `c000`/`c001` firmware/bootloader versions, `c0c0` timer-health string.
 - `0x4003` watchdog timeout (seconds; 0 disables).
+- `0x07e0` audio power-amp enable (`1` = on, `0` = off; the external speaker amp — see
+  the Speaker section). `./pm3.py amp on|off|status`.
 
 Watchdog control: `./pm3.py watchdog 0`. When the PIC32 watchdog expires it
 **reboots** the unit (a full power-cycle that comes back on its own), not a permanent

@@ -156,6 +156,7 @@ def ssh(cmd: str):
 
 PIC_KEYS = {
     0x0100: ("u8", "internal power button"), 0x03FB: ("u8", "ignition"),
+    0x07E0: ("u8", "audio PA enable (1=on, 0=off)"),
     0x4000: ("u16", "watchdog residual s"), 0x4003: ("u16", "watchdog timeout s"),
     0x4004: ("u16", "boot watchdog timeout s"), 0x500B: ("u16", "ambient light"),
     0x5040: ("u16", "input voltage mV"),
@@ -449,21 +450,49 @@ def cmd_cvend_restart(args):
 
 
 # --- audio (ALSA speaker) --------------------------------------------------
-# The grille speakers are on the TLV320AIC32x4 Line-Out, ALSA card 0 "PM3 Audio".
-# PREREQUISITE (verified): the speaker only produces sound once nx has PLAYED audio
-# once this boot (e.g. a card tap on the stock UI). After that, playback here works
-# with nx stopped and persists until reboot. On a pure dongle boot where nx never
-# ran, this plays with no error but is SILENT. The cause is a state nx's playback
-# leaves behind that is invisible to every readable register (codec, DAPM, clocks
-# incl. the 24 MHz MCLK, AUDMUX, SSI) -- downstream of the codec; still being chased
-# by reverse-engineering nx (see PROCESS.md), not assumed to need a kernel change.
-# For now: boot stock (or start nx and let it tone once), then ./pm3.py nx-stop and
-# play here. The piezo buzzer (beep) is separate hardware and always works.
+# The grille speakers are on the TLV320AIC32x4 Line-Out, ALSA card 0 "PM3 Audio",
+# but the Line-Out feeds an EXTERNAL power amp ("PAmobil2") that is OFF at power-on
+# and switched on over the PIC32: ValueWrite key 0x07E0, 1 = on, 0 = off -- one master
+# gate for both channels, readable, latched until the PIC32 resets at power-off. With
+# the amp off the codec/mixer/clocks are all fine and the speaker is still SILENT,
+# which is why playback historically "needed nx": nx switches the amp on once at
+# startup (its NxPaCtrl / NxPaMobil2PicDev). `play` and `amp on` set 0x07E0=1 here, so
+# no nx is needed. Two ALSA details still matter: keep the stock routing (alsactl
+# restore) with `LO Driver Gain` 6 (0 dB baseline), and play a FILE, not a pipe (stdin
+# into aplay is silent on this device). The piezo buzzer (beep) is separate hardware
+# and always works. See INTERFACE.md for the full story.
+
+PA_ENABLE_KEY = 0x07E0   # PIC32 audio power-amp master enable: 1 = on, 0 = off
+
+
+def _pic_set_amp(enable: bool):
+    """Switch the external audio power amp on/off via PIC32 ValueWrite 0x07E0."""
+    s = SshSerial(PIC32_TTY)
+    s.request(0x04, struct.pack(">H", PA_ENABLE_KEY) + bytes([1 if enable else 0]))
+    s.close()
+
+
+def cmd_amp(args):
+    s = SshSerial(PIC32_TTY)
+    if args.state == "status":
+        r = s.request(0x02, struct.pack(">H", PA_ENABLE_KEY))
+        if r is None:
+            print("no reply")
+        else:
+            on = int.from_bytes(r["data"][2:], "big")
+            print(f"amp {'on' if on else 'off'} (0x07e0={on})")
+    else:
+        s.request(0x04, struct.pack(">H", PA_ENABLE_KEY) + bytes([1 if args.state == "on" else 0]))
+        print(f"amp {args.state}")
+    s.close()
+
 
 def cmd_play(args):
     if not os.path.isfile(args.file):
         print(f"no such file: {args.file}", file=sys.stderr)
         sys.exit(1)
+    if not args.no_amp:
+        _pic_set_amp(True)   # external power amp on (PIC32 0x07E0 = 1); harmless if already on
     remote = "/tmp/pm3play-" + os.path.basename(args.file)
     opts = ["-o", "BatchMode=yes", "-o", "StrictHostKeyChecking=no",
             "-o", "UserKnownHostsFile=/dev/null", "-o", "LogLevel=ERROR"]
@@ -530,14 +559,19 @@ def main():
     p.add_argument("type", help="message type byte in hex, e.g. 02")
     p.add_argument("data", nargs="?", default="", help="payload as hex, e.g. 5040 (default: none)")
     p.set_defaults(fn=cmd_pic_raw)
+    p = sp.add_parser("amp", help="switch the external audio power amp (PIC32 0x07E0) on/off, or read its state")
+    p.add_argument("state", choices=["on", "off", "status"], help="on, off, or status")
+    p.set_defaults(fn=cmd_amp)
 
     sp.add_parser("cvend-version", help="print the cVEND reader firmware version").set_defaults(fn=cmd_cvend_version)
     p = sp.add_parser("beep", help="sound the cVEND piezo buzzer")
     p.add_argument("--freq", type=int, default=2000, help="frequency in Hz (default 2000; ~2700 is loudest)")
     p.add_argument("--ms", type=int, default=200, help="duration in milliseconds (default 200)")
     p.set_defaults(fn=cmd_beep)
-    p = sp.add_parser("play", help="play a WAV through the Line-Out speaker (needs nx to have played a sound this boot; see INTERFACE.md)")
+    p = sp.add_parser("play", help="play a WAV through the Line-Out speaker (enables the PIC32 power amp first; no nx needed)")
     p.add_argument("file", help="local .wav file (copied to the unit, then aplay'd)")
+    p.add_argument("--no-amp", action="store_true",
+                   help="don't touch the PIC32 amp enable (0x07E0) before playing")
     p.add_argument("--pcm", type=int, default=65,
                    help="PCM volume percent (default 65; non-linear: ~73%% = 0 dB, 15%% is near silent)")
     p.add_argument("--lo-gain", type=int, default=6,

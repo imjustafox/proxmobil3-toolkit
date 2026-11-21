@@ -104,37 +104,36 @@ once a second, just listen, and it streams a UID frame for every card, indefinit
 - **The simplest explanation was right, and we reached it last.** The reader just
   scans and pushes; everything clever we tried (re-init, arming, key-server) was
   working against that, not with it.
-- **"Needs the stock firmware" vs "needs a setup step the firmware does" — and
-  verify from a genuinely cold state before you call it.** The speaker played nothing
-  with nx stopped, so the first conclusion was "needs nx's init." Two silent-failure
-  traps turned out to be stacked and *not* about nx: piping into `aplay` (stdin)
-  produces no sound on this device where a file plays fine, and the output routing
-  needs `alsactl -f /etc/asound.state restore`. Fixing those got sound with nx
-  stopped — so we declared it nx-free. That was premature: a second pass (a peer who
-  couldn't reproduce from a true cold boot) showed the speaker only plays once nx has
-  *played audio* earlier this boot; after that, `aplay` works with nx stopped and the
-  state persists until reboot. Chasing the mechanism, we eliminated everything readable
-  from userspace — the codec registers (pages 0–1, incl. the DAC clock-source and
-  processing-block select), the DAPM graph (DAC/LOL/LOR and their drivers read On cold
-  *and* warm), GPIO, the whole audio clock tree (PLL, SSI1, and the 24 MHz codec MCLK,
-  all correct cold), the AUDMUX routing, and the SSI1 config: cold-silent and
-  warm-audible came back byte-identical in every register we can read, even with the
-  codec PLL repointed to BCLK. So the gate is a state nx's playback leaves behind that
-  none of those expose — downstream of the codec (SDMA / driver-private / timing) — and
-  the way to pin it is to reverse-engineer what nx's audio path actually does, not to
-  assume a kernel change. A later round of cold-boot tests (verified cold, nx never
-  started) tightened this: a raw `aplay -D hw:0` is *silent* too, so dmix is exonerated;
-  a `default` play right after it is still silent, so merely streaming the device does
-  not prime the gate; and a 30 s sustained cold stream is silent throughout, so there is
-  no analog soft-start. The differentiator is thus nx's *specific* first playback at the
-  driver/analog level — not the stream path or params any userspace `aplay` can drive —
-  which means no host-side workaround, only reverse-engineering nx. Open as of this
-  writing. Lesson: distinguish "needs the
-  firmware running now" from "needs a setup step the firmware happens to do," *and*
-  re-test from a clean boot (nx never started) before declaring a subsystem
-  firmware-independent — "works after I stop nx" is not the same as "works when nx never
-  ran"; and when every readable register matches but the behaviour differs, the cause is
-  in state you aren't reading, which points back at the firmware to RE.
+- **When every register you can read is identical but the behaviour differs, the
+  variable is on a bus you aren't watching — that's a direction, not a dead end.** The
+  speaker played nothing with nx stopped, so the first guess was "needs nx's init." Two
+  stacked silent-failure traps were real but not the whole story: piping into `aplay`
+  (stdin) is silent on this device where a *file* plays, and the routing needs `alsactl
+  -f /etc/asound.state restore`. Fixing those got sound after nx had run, so we called
+  it nx-free — premature: from a *genuinely* cold boot (nx never started) it was still
+  silent. Chasing it, we eliminated everything readable from the SoC — codec registers
+  (pages 0–1, incl. the DAC clock-source), the DAPM graph, GPIO, the whole clock tree
+  (PLL, SSI1, the 24 MHz codec MCLK), AUDMUX, and SSI1 — all byte-identical between
+  cold-silent and warm-audible, backed by an `LD_PRELOAD` trace of nx's ALSA calls vs a
+  cold `aplay` (same `dmix`→`hw:0`, no mixer write, no `i²c`/`mem`/`gpio`), plus cold
+  `aplay -D hw:0`, a stream-primed retry, and a 30 s sustained stream — all silent. That
+  *total identity* was the clue we nearly walked past: if nothing you can read differs,
+  the cause is on something you're not reading. The answer was in nx's own binary
+  strings the whole time — `ActivateExternalSpeaker`, `NxPaCtrl` ("PA Amplifier Control
+  Mode"), `NxPaMobil2PicDev` — an external power amp switched on over the **PIC32**
+  (`ttymxc2`), downstream of the codec and off-SoC: the one bus none of the audio-side
+  probes watched. Sniffing nx's first-init PIC32 traffic (the same `cvsniff` shim that
+  cracked the reader — it already logs `ttymxc2`) caught a one-time `ValueWrite
+  0x07E0=1` buried in the watchdog/sensor chatter; toggling it on the live unit gave a
+  clean beep→silent→beep, and a verified-cold boot with just that write — no nx — plays.
+  The fix is one frame (`pm3.py amp on`, and `play` sets `0x07E0=1` itself). Lessons:
+  (1) distinguish "needs the firmware running now" from "needs a one-time setup step the
+  firmware does," and re-test from a clean boot before calling a subsystem
+  firmware-independent; (2) "every register I can read matches" points *at* the state
+  you aren't instrumenting — widen the net (here, from the SoC audio buses to the PIC32
+  serial) instead of digging deeper into the ones you already trust; (3) read the
+  firmware's own strings early — the mechanism was named in plain text long before we
+  found it the hard way.
 - **Watch the real hardware.** The screen going from OUT OF SERVICE to SCAN/TAP, a
   beep on a tap, an LED blink — those physical signals repeatedly settled questions
   that the logs alone left ambiguous.

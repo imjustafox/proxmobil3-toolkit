@@ -99,6 +99,8 @@ PM3_HOST=<unit-ip> ./pm3.py info            # kernel, services, ttys
 ./pm3.py cvend-cat /etc/os-release             # read a file off the reader
 ./pm3.py cvend-finfo /home/app0/version        # file size + CRC32 (0x9C)
 ./pm3.py beep --freq 2700 --ms 120            # piezo buzzer
+./pm3.py amp on                               # enable the external audio power amp (PIC32 0x07E0)
+./pm3.py play tone.wav                         # play a WAV out the speaker (enables the amp first; no nx)
 ./pm3.py nx-stop / nx-start                   # stop/start the stock UI
 ```
 
