@@ -182,8 +182,10 @@ the device's secure key store and the root of `_authenticateFromHSM`.
 `crypto/DesfireCrypto.cpp` (AES/3DES CMAC plus CRC32 for DESFire secure
 messaging), plus standalone `aes.cpp` (`aes_encrypt`/`aes_decrypt`) and `des.cpp`
 (`des_setkey`). These back DESFire, Ultralight-C, and SAM authentication. The CRC
-used by `0x9C` FileInfo is a FEIG variant, neither standard CRC-32 nor JAMCRC,
-which fits having its own `Crc8`/`Crc16`/`Crc32` modules.
+used by `0x9C` FileInfo is `Crc32::crc32Feig` (`0x145ac`): the standard reflected
+CRC-32 table (`0xEDB88320`) with initial value 0 and a final XOR of `0xFFFFFFFF`.
+It hashes the file in 4 KB chunks and seeds each call with the previous result.
+That is neither ISO-HDLC (init `0xFFFFFFFF`) nor JAMCRC (no final XOR).
 
 ## 10. Device: LEDs and buzzer
 
@@ -198,14 +200,15 @@ which fits having its own `Crc8`/`Crc16`/`Crc32` modules.
 
 ## Summary
 
-Nothing in the reader's command surface is unknown now. Every IPP opcode maps to a
+Nothing in the reader's command surface is unmapped. Every IPP opcode goes to a
 named handler. The file-ops, LED, buzzer, DESFire, Ultralight, and FileInfo formats
 are decoded. The fare subsystems (DESFire transaction engine, Mifare Classic,
 Ultralight-C, ISO-APDU, girogo, VDV-KA, ITSO, EMV) and their security backends
 (MIFARE SAM AV2, PKCS#11 HSM, ITSO soft/post/hops SAM, AES/3DES/CMAC crypto) are
 identified at the API level. What cannot be exercised on this unit needs hardware
 we do not have (a fitted SAM/ISAM) or provisioning we do not hold (an EMV config,
-scheme keys). Nothing here is undiscovered.
+scheme keys). What is left is behavior and provisioning detail, not missing
+opcodes.
 
 ## 11. Provisioning: what the hardware/secret-gated features need
 

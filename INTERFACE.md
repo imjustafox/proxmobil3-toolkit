@@ -184,16 +184,17 @@ The reader exposes read/write file ops over IPP. Two are wrapped in `pm3.py`
   [u32 len][data]`. It is one frame, so `count` should stay under about 60 KB. Use
   `offset` to page.
 - `0xA4` FileList is `[u16 pathlen][path]` and replies `0xA5 [u32 len][name\0mtime\0...]`.
-- `0x9C` FileInfo's payload format is not yet known. There is no reply to the
-  obvious guesses.
+- `0x9C` FileInfo is `[u16 pathlen][path][u32 off][u32 len]` and replies
+  `0x9D [status:u16][size:u32 BE][crc32:u32 BE]`. `0,0` covers the whole file.
+  The CRC is a reflected CRC-32 (poly `0x04C11DB7`, init 0, xorout `0xFFFFFFFF`)
+  over the file bytes in the requested range.
 
 Worth reading: `/etc/fetpfrc` (JSON payment config: EMVCo permitted SAM slots,
 crypto/token plugins), `/home/startup_config.conf` (`STARTUP_APP="/home/app0"`),
 `/home/app0/run` (the app launcher), and `/home/app0/emv/transact-counter.dat`.
 The apps `app0` to `app7` and `feig_app_loader` implement a fallback/update
-scheme. The roughly 64 KB binary `/home/app0/config` is the FEIG reader config blob
-and likely holds the RF/power timers below, but it did not yield to simple offset
-reads. That is still an open lead.
+scheme. `/home/app0/config` is 160 bytes, all zeros, so it is not the reader
+config blob after all.
 
 ### Sleep behavior and keeping it awake
 
