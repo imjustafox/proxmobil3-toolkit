@@ -262,10 +262,12 @@ on the device. The `0x20` message is the direct path.
 
 `/sys/class/leds` exposes only the SD-activity LEDs (`mmc0::`, `mmc1::`).
 
-Backlight has no `/sys/class/backlight` entry, and the LCD DTB node has no
-`pwm-backlight`, so there is no software brightness control. Backlight follows LCD
-power. To clear the screen to black, write zeros to fb0; `./pm3.py blank-screen`
-does that.
+Backlight has no `/sys/class/backlight` entry and no `pwm-backlight` node; the
+three i.MX PWM channels are unused. The PIC32 drives the panel instead. Value
+`0x4030` is the brightness at ambient 0 and `0x4031` the brightness at ambient
+10000, both 0..10000; `0x500b` is the ambient reading. Set both to the same value
+for fixed brightness, or max above min for automatic. To clear the screen to
+black, write zeros to fb0; `./pm3.py blank-screen` does that.
 
 ## Audio and buzzer
 
